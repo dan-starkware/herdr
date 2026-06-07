@@ -16,6 +16,16 @@ impl App {
     /// phase) forwards unconsumed keys to the focused agent pane when Main has
     /// focus.
     pub(super) async fn handle_home_key(&mut self, key: TerminalKey) {
+        // alt+p submits a PR for the focused agent's branch; this runs `gh`, so
+        // it must happen at the App level rather than in AppState.
+        let event = key.as_key_event();
+        if event.code == KeyCode::Char('p')
+            && event.modifiers.contains(KeyModifiers::ALT)
+            && self.state.control.focus == FocusPane::Agents
+        {
+            self.submit_pr_for_selected_agent();
+            return;
+        }
         let _consumed = self.state.apply_home_key(key);
     }
 }
@@ -225,7 +235,9 @@ impl AppState {
     }
 
     fn request_home_submit_pr(&mut self) {
-        // Phase 5: submit a PR for the selected branch / agent.
+        // PR submission needs `gh`, so it runs at the App level: alt+p for the
+        // focused agent is intercepted in `App::handle_home_key`, and alt+p in the
+        // review picker is handled by `App::handle_review_key`. Nothing to do here.
     }
 }
 

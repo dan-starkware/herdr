@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{terminal_targets::TerminalTargetError, App, Mode};
 use crate::api::schema::{AgentStartParams, SplitDirection};
@@ -507,7 +507,7 @@ impl App {
 
     /// Handle a key while in [`Mode::Review`] (the branch picker).
     pub(super) fn handle_review_key(&mut self, key: crossterm::event::KeyEvent) {
-        use crossterm::event::KeyCode;
+        use crossterm::event::{KeyCode, KeyModifiers};
         match key.code {
             KeyCode::Esc => {
                 self.state.mode = Mode::Home;
@@ -515,8 +515,79 @@ impl App {
             }
             KeyCode::Up => self.state.review_move_selection(-1),
             KeyCode::Down => self.state.review_move_selection(1),
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.submit_pr_for_review();
+            }
             KeyCode::Enter => self.open_review_branch(),
             _ => {}
+        }
+    }
+
+    /// Submit a PR for the branch selected in the review picker.
+    fn submit_pr_for_review(&mut self) {
+        let Some(review) = self.state.control.review.as_ref() else {
+            return;
+        };
+        let Some(branch) = review.branches.get(review.selected) else {
+            return;
+        };
+        let repo_root = review.repo.root.clone();
+        // PR head must be a local branch name; strip a remote prefix if present.
+        let head = branch
+            .name
+            .rsplit_once('/')
+            .filter(|_| branch.is_remote)
+            .map(|(_, name)| name.to_string())
+            .unwrap_or_else(|| branch.name.clone());
+        let base = crate::workspace::review_base(&repo_root, &head);
+        self.submit_pr(&repo_root, &head, &base);
+    }
+
+    /// Submit a PR for the branch of the agent selected in the agents half.
+    pub(super) fn submit_pr_for_selected_agent(&mut self) {
+        let entries = crate::ui::agent_panel_entries_all(&self.state);
+        let Some(ws_idx) = entries
+            .get(self.state.control.selected_agent)
+            .map(|entry| entry.ws_idx)
+        else {
+            return;
+        };
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return;
+        };
+        let Some(branch) = ws.branch() else {
+            self.state
+                .set_home_toast("PR failed", "agent has no branch");
+            return;
+        };
+        let repo_root = ws
+            .worktree_space()
+            .map(|space| space.repo_root.clone())
+            .unwrap_or_else(|| ws.identity_cwd.clone());
+        let base = crate::workspace::review_base(&repo_root, &branch);
+        self.submit_pr(&repo_root, &branch, &base);
+    }
+
+    /// Run `gh pr create --fill` for `head` against `base`, reporting via a toast.
+    fn submit_pr(&mut self, repo_root: &Path, head: &str, base: &str) {
+        let output = std::process::Command::new("gh")
+            .current_dir(repo_root)
+            .args(["pr", "create", "--fill", "--head", head, "--base", base])
+            .output();
+        match output {
+            Ok(out) if out.status.success() => {
+                let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                self.state.set_home_toast("PR created", url);
+            }
+            Ok(out) => {
+                let message = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                tracing::warn!(error = %message, "gh pr create failed");
+                self.state.set_home_toast("PR failed", message);
+            }
+            Err(err) => {
+                self.state
+                    .set_home_toast("PR failed", format!("gh not available: {err}"));
+            }
         }
     }
 
