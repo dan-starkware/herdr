@@ -223,6 +223,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Show detected/reported agent labels in split pane borders when no manual pane name is set.
 # show_agent_labels_on_pane_borders = false
 
+# Show how long each agent has been working next to its status in the agent panel
+# (for example "working · 1m23s"). Set false to hide the timer.
+# show_agent_working_time = true
+
 # Agent panel scope: "current" or "all". Toggling it in the sidebar saves this setting.
 # agent_panel_scope = "all"
 

@@ -19,6 +19,9 @@ pub struct PaneDetail {
     pub seen: bool,
     pub custom_status: Option<String>,
     pub state_labels: HashMap<String, String>,
+    /// When the current `Working` stretch began (`None` unless working). Carried
+    /// as a raw `Instant` so the elapsed time is recomputed per render frame.
+    pub working_since: Option<std::time::Instant>,
 }
 
 impl Tab {
@@ -57,6 +60,7 @@ impl Tab {
                     seen: pane.seen,
                     custom_status: presentation.custom_status,
                     state_labels: presentation.state_labels,
+                    working_since: terminal.working_since(),
                 })
             })
             .collect()

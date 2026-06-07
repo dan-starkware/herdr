@@ -7,7 +7,9 @@ use ratatui::{
 };
 
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
-use super::status::{agent_icon, state_dot, state_label, state_label_color};
+use super::status::{
+    agent_icon, format_working_duration, state_dot, state_label, state_label_color,
+};
 use crate::app::state::{AgentPanelScope, Palette};
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
@@ -27,6 +29,8 @@ pub(crate) struct AgentPanelEntry {
     pub seen: bool,
     pub custom_status: Option<String>,
     pub state_labels: std::collections::HashMap<String, String>,
+    /// Raw start time of the current `Working` stretch; formatted per frame.
+    pub working_since: Option<std::time::Instant>,
 }
 
 fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
@@ -155,6 +159,7 @@ fn agent_panel_entries_with_runtimes(
                     seen: detail.seen,
                     custom_status: detail.custom_status,
                     state_labels: detail.state_labels,
+                    working_since: detail.working_since,
                 })
                 .collect()
         }
@@ -178,6 +183,7 @@ fn agent_panel_entries_with_runtimes(
                         seen: detail.seen,
                         custom_status: detail.custom_status,
                         state_labels: detail.state_labels,
+                        working_since: detail.working_since,
                     })
             })
             .collect(),
@@ -1145,6 +1151,16 @@ fn render_agent_detail(
             Span::styled("   ", Style::default()),
             Span::styled(label, status_style),
         ];
+        // Live working timer. `working_since` is a raw Instant, so formatting it
+        // against `Instant::now()` here means the value re-derives every frame —
+        // the working spinner already forces ~8 fps redraws, so it ticks live.
+        if app.show_agent_working_time {
+            if let Some(since) = detail.working_since {
+                let elapsed = std::time::Instant::now().saturating_duration_since(since);
+                status_spans.push(Span::styled(" · ", agent_style));
+                status_spans.push(Span::styled(format_working_duration(elapsed), status_style));
+            }
+        }
         if let Some(agent_label) = &detail.agent_label {
             status_spans.push(Span::styled(" · ", agent_style));
             status_spans.push(Span::styled(agent_label, agent_style));
@@ -1394,6 +1410,7 @@ mod tests {
             seen: true,
             custom_status: None,
             state_labels: std::collections::HashMap::new(),
+            working_since: None,
         };
 
         let label = format_agent_panel_primary_label(&entry, 18);

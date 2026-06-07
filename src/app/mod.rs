@@ -503,6 +503,7 @@ impl App {
             confirm_close: config.ui.confirm_close,
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
+            show_agent_working_time: config.ui.show_agent_working_time,
             pane_history_persistence: config.experimental.pane_history,
             reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
             cjk_ime_agent_filter_configured: !config.experimental.cjk_ime_agents.is_empty(),
@@ -1193,6 +1194,7 @@ impl App {
                 self.state.prompt_new_tab_name = config.ui.prompt_new_tab_name;
                 self.state.show_agent_labels_on_pane_borders =
                     config.ui.show_agent_labels_on_pane_borders;
+                self.state.show_agent_working_time = config.ui.show_agent_working_time;
                 self.state.agent_panel_scope =
                     agent_panel_scope_from_config(config.ui.agent_panel_scope);
                 self.state.agent_panel_scroll = 0;

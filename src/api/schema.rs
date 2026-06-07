@@ -764,6 +764,10 @@ pub struct AgentInfo {
     pub agent_status: AgentStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_status: Option<String>,
+    /// Seconds the agent has been continuously working. Present only while the
+    /// agent is in the working state; omitted (and skipped on the wire) otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub state_labels: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1387,6 +1391,7 @@ mod tests {
                     display_agent: None,
                     agent_status: AgentStatus::Unknown,
                     custom_status: None,
+                    working_seconds: None,
                     state_labels: HashMap::new(),
                     agent_session: None,
                     revision: 0,
@@ -1438,6 +1443,7 @@ mod tests {
                     display_agent: None,
                     agent_status: AgentStatus::Unknown,
                     custom_status: None,
+                    working_seconds: None,
                     state_labels: HashMap::new(),
                     agent_session: None,
                     revision: 0,

@@ -246,6 +246,11 @@ pub struct PaneInfo {
     pub agent_status: AgentStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_status: Option<String>,
+    /// Seconds the agent has been continuously working. Present only while the
+    /// agent is in the working state; omitted (and skipped on the wire) otherwise
+    /// so older clients reading a newer server stay compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub state_labels: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

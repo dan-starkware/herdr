@@ -948,6 +948,7 @@ mod tests {
             seen: true,
             custom_status: None,
             state_labels: std::collections::HashMap::new(),
+            working_since: None,
         }
     }
 

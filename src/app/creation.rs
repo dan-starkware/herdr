@@ -298,6 +298,9 @@ impl App {
             display_agent: presentation.display_agent,
             agent_status: pane_agent_status(terminal.state, pane.seen),
             custom_status: presentation.custom_status,
+            working_seconds: terminal
+                .working_elapsed(std::time::Instant::now())
+                .map(|elapsed| elapsed.as_secs()),
             state_labels: presentation.state_labels,
             agent_session: terminal_agent_session_info(terminal),
             revision: terminal.revision,

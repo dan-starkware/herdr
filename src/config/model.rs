@@ -431,6 +431,9 @@ pub struct UiConfig {
     pub prompt_new_tab_name: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
+    /// Show how long each agent has been working next to its status in the agent
+    /// panel (e.g. `working · 1m23s`). Default: true.
+    pub show_agent_working_time: bool,
     /// Agent sidebar scope. Saved values are "current" or "all". Default: "all".
     pub agent_panel_scope: AgentPanelScopeConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -616,6 +619,7 @@ impl Default for UiConfig {
             confirm_close: true,
             prompt_new_tab_name: true,
             show_agent_labels_on_pane_borders: false,
+            show_agent_working_time: true,
             agent_panel_scope: AgentPanelScopeConfig::All,
             accent: "cyan".into(),
             toast: ToastConfig::default(),

@@ -62,6 +62,11 @@ pub struct TerminalState {
     fallback_visible_working: bool,
     fallback_observed_at: Option<Instant>,
     stale_hook_idle_since: Option<Instant>,
+    /// When the effective state last entered `Working`. Used to display how long
+    /// the agent has been working. Reset to `None` whenever the effective state
+    /// leaves `Working`. Not persisted (an `Instant`), so it restarts at 0 after
+    /// a server restart/handoff — same behavior as the other `Instant` fields.
+    working_since: Option<Instant>,
     pub hook_authority: Option<HookAuthority>,
     pub agent_metadata: HashMap<String, AgentMetadata>,
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
@@ -88,6 +93,7 @@ impl TerminalState {
             fallback_visible_working: false,
             fallback_observed_at: None,
             stale_hook_idle_since: None,
+            working_since: None,
             hook_authority: None,
             agent_metadata: HashMap::new(),
             persisted_agent_session: None,
@@ -119,6 +125,28 @@ impl TerminalState {
     ) -> Self {
         self.pending_agent_resume_plan = Some(plan);
         self
+    }
+
+    /// How long the agent has been continuously in the `Working` state, measured
+    /// from `now`. Returns `None` unless the effective state is currently
+    /// `Working`, so callers never observe a stale duration from a code path that
+    /// updated `self.state` without going through the normal maintenance.
+    pub fn working_elapsed(&self, now: Instant) -> Option<Duration> {
+        if self.state != AgentState::Working {
+            return None;
+        }
+        self.working_since
+            .map(|since| now.saturating_duration_since(since))
+    }
+
+    /// Raw timestamp of when the current `Working` stretch began, gated the same
+    /// way as [`Self::working_elapsed`]. Carried into render entries so the
+    /// duration can be (re)computed per frame, keeping the displayed timer live.
+    pub fn working_since(&self) -> Option<Instant> {
+        if self.state != AgentState::Working {
+            return None;
+        }
+        self.working_since
     }
 
     #[cfg(test)]
@@ -706,6 +734,7 @@ impl TerminalState {
         self.persisted_agent_session = None;
         self.agent_metadata.clear();
         self.state = AgentState::Unknown;
+        self.working_since = None;
         self.launch_argv = None;
         self.respawn_shell_on_exit = false;
         self.pending_agent_resume_plan = None;
@@ -756,6 +785,19 @@ impl TerminalState {
 
         let presentation = self.effective_presentation_for_state_at(state, now);
         self.clear_expiry_pending_for_hidden_metadata();
+
+        // Maintain the "working since" timestamp. This must run BEFORE the
+        // no-change early-return below so a restored/handed-off terminal whose
+        // state is already `Working` (with `working_since == None`) gets stamped
+        // on the next detection cycle even when nothing else changed.
+        match state {
+            AgentState::Working => {
+                self.working_since.get_or_insert(now);
+            }
+            _ => {
+                self.working_since = None;
+            }
+        }
 
         if previous_agent_label == agent_label
             && previous_state == state
@@ -836,6 +878,90 @@ mod tests {
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())
+    }
+
+    #[test]
+    fn working_since_tracks_a_single_working_stretch() {
+        let mut term = test_terminal();
+        let t0 = std::time::Instant::now();
+
+        // Enter Working: timer starts at zero.
+        term.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Working,
+            false,
+            false,
+            false,
+            false,
+            t0,
+        );
+        assert_eq!(term.state, AgentState::Working);
+        assert_eq!(term.working_elapsed(t0), Some(Duration::ZERO));
+
+        // Hold Working: elapsed grows from the original start, not re-stamped.
+        let t1 = t0 + Duration::from_secs(5);
+        term.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Working,
+            false,
+            false,
+            false,
+            false,
+            t1,
+        );
+        assert_eq!(term.working_elapsed(t1), Some(Duration::from_secs(5)));
+
+        // Leave Working: timer clears.
+        let t2 = t0 + Duration::from_secs(6);
+        term.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Idle,
+            false,
+            false,
+            false,
+            false,
+            t2,
+        );
+        assert_eq!(term.state, AgentState::Idle);
+        assert_eq!(term.working_elapsed(t2), None);
+        assert_eq!(term.working_since(), None);
+
+        // Re-enter Working: fresh start, no stale carry-over.
+        let t3 = t0 + Duration::from_secs(10);
+        term.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Working,
+            false,
+            false,
+            false,
+            false,
+            t3,
+        );
+        assert_eq!(term.working_elapsed(t3), Some(Duration::ZERO));
+        assert_eq!(
+            term.working_elapsed(t3 + Duration::from_secs(2)),
+            Some(Duration::from_secs(2))
+        );
+    }
+
+    #[test]
+    fn working_elapsed_is_gated_on_working_state() {
+        let mut term = test_terminal();
+        let t0 = std::time::Instant::now();
+        term.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Working,
+            false,
+            false,
+            false,
+            false,
+            t0,
+        );
+        assert!(term.working_elapsed(t0).is_some());
+
+        // Respawn reset must not leak a stale start time into the next stretch.
+        term.clear_agent_runtime_identity_after_respawn();
+        assert_eq!(term.working_elapsed(t0), None);
     }
 
     #[test]

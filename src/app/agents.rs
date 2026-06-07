@@ -416,6 +416,7 @@ impl App {
             display_agent: pane.display_agent,
             agent_status: pane.agent_status,
             custom_status: pane.custom_status,
+            working_seconds: pane.working_seconds,
             state_labels: pane.state_labels,
             agent_session: pane.agent_session,
             workspace_id: pane.workspace_id,
