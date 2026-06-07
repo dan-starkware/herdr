@@ -507,7 +507,7 @@ impl App {
 
     /// Handle a key while in [`Mode::Review`] (the branch picker).
     pub(super) fn handle_review_key(&mut self, key: crossterm::event::KeyEvent) {
-        use crossterm::event::{KeyCode, KeyModifiers};
+        use crossterm::event::KeyCode;
         match key.code {
             KeyCode::Esc => {
                 self.state.mode = Mode::Home;
@@ -515,9 +515,8 @@ impl App {
             }
             KeyCode::Up => self.state.review_move_selection(-1),
             KeyCode::Down => self.state.review_move_selection(1),
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.submit_pr_for_review();
-            }
+            // The picker is not a text input, so plain `p` (or alt+p) submits a PR.
+            KeyCode::Char('p') => self.submit_pr_for_review(),
             KeyCode::Enter => self.open_review_branch(),
             _ => {}
         }

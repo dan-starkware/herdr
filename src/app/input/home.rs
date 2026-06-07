@@ -16,13 +16,10 @@ impl App {
     /// phase) forwards unconsumed keys to the focused agent pane when Main has
     /// focus.
     pub(super) async fn handle_home_key(&mut self, key: TerminalKey) {
-        // alt+p submits a PR for the focused agent's branch; this runs `gh`, so
-        // it must happen at the App level rather than in AppState.
+        // `p` (plain in the agents pane, or alt+p anywhere) submits a PR for the
+        // focused agent's branch; this runs `gh`, so it happens at the App level.
         let event = key.as_key_event();
-        if event.code == KeyCode::Char('p')
-            && event.modifiers.contains(KeyModifiers::ALT)
-            && self.state.control.focus == FocusPane::Agents
-        {
+        if event.code == KeyCode::Char('p') && self.state.control.focus == FocusPane::Agents {
             self.submit_pr_for_selected_agent();
             return;
         }
@@ -76,37 +73,36 @@ impl AppState {
     pub(crate) fn apply_home_key(&mut self, key: TerminalKey) -> bool {
         let event = key.as_key_event();
         let alt = event.modifiers.contains(KeyModifiers::ALT);
+        // The Control/Agents panes are not text inputs, so command keys work as
+        // plain letters there. `alt+` also works everywhere (e.g. from Main, where
+        // plain keys are typed into the agent).
+        let in_list = self.control.focus != FocusPane::Main;
+        let cmd = alt || in_list;
 
-        match (event.code, alt) {
-            // Directional pane focus.
-            (KeyCode::Char('h'), true) => self.home_focus_left(),
-            (KeyCode::Char('j'), true) => self.set_home_focus(FocusPane::Agents),
-            (KeyCode::Char('k'), true) => self.set_home_focus(FocusPane::Control),
-            (KeyCode::Char('l'), true) => self.set_home_focus(FocusPane::Main),
+        match event.code {
+            // Directional pane focus — alt so it also works while typing in Main.
+            KeyCode::Char('h') if alt => self.home_focus_left(),
+            KeyCode::Char('j') if alt => self.set_home_focus(FocusPane::Agents),
+            KeyCode::Char('k') if alt => self.set_home_focus(FocusPane::Control),
+            KeyCode::Char('l') if alt => self.set_home_focus(FocusPane::Main),
 
             // Commands.
-            (KeyCode::Char('q'), true) => self.should_quit = true,
-            (KeyCode::Char(','), true) => self.mode = Mode::Settings,
-            (KeyCode::Char('?'), true) => self.mode = Mode::KeybindHelp,
-            (KeyCode::Char('n'), true) => self.request_home_new_agent(),
-            (KeyCode::Char('r'), true) => self.request_home_review(),
-            (KeyCode::Char('x'), true) => self.request_home_kill_agent(),
-            (KeyCode::Char('p'), true) => self.request_home_submit_pr(),
-
-            // Jump to agent N (alt+1..alt+9).
-            (KeyCode::Char(c), true) if c.is_ascii_digit() && c != '0' => {
+            KeyCode::Char('q') if cmd => self.should_quit = true,
+            KeyCode::Char(',') if cmd => self.mode = Mode::Settings,
+            KeyCode::Char('?') if cmd => self.mode = Mode::KeybindHelp,
+            KeyCode::Char('n') if cmd => self.request_home_new_agent(),
+            KeyCode::Char('r') if cmd => self.request_home_review(),
+            KeyCode::Char('x') if cmd => self.request_home_kill_agent(),
+            KeyCode::Char('p') if cmd => self.request_home_submit_pr(),
+            KeyCode::Char(c) if cmd && c.is_ascii_digit() && c != '0' => {
                 self.home_jump_to_agent((c as u8 - b'1') as usize);
             }
 
-            // Selection/activation only when a left pane is focused; with Main
-            // focused these fall through to the agent pane.
-            (KeyCode::Up, false) if self.control.focus != FocusPane::Main => {
-                self.home_move_selection(-1)
-            }
-            (KeyCode::Down, false) if self.control.focus != FocusPane::Main => {
-                self.home_move_selection(1)
-            }
-            (KeyCode::Enter, false) if self.control.focus != FocusPane::Main => self.home_activate(),
+            // Selection/activation only in a list pane; with Main focused these
+            // fall through to the agent pane.
+            KeyCode::Up if in_list => self.home_move_selection(-1),
+            KeyCode::Down if in_list => self.home_move_selection(1),
+            KeyCode::Enter if in_list => self.home_activate(),
 
             _ => return false,
         }
@@ -460,6 +456,33 @@ mod tests {
         assert_eq!(state.control.review.as_ref().unwrap().selected, 1);
         state.review_move_selection(-5);
         assert_eq!(state.control.review.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn plain_command_keys_fire_in_list_panes_but_not_main() {
+        let mut state = AppState::test_new();
+        state.mode = Mode::Home;
+        state.control.repos = vec![crate::workspace::Repository {
+            key: "a".into(),
+            root: "/a".into(),
+            label: "a".into(),
+        }];
+
+        // Plain `n` in the Control pane opens the create form.
+        state.control.focus = FocusPane::Control;
+        assert!(state.apply_home_key(plain(KeyCode::Char('n'))));
+        assert_eq!(state.mode, Mode::CreateAgent);
+
+        // Plain `r` in the Control pane opens the review picker.
+        state.mode = Mode::Home;
+        assert!(state.apply_home_key(plain(KeyCode::Char('r'))));
+        assert_eq!(state.mode, Mode::Review);
+
+        // With Main focused, the same plain key is left for the agent pane.
+        state.mode = Mode::Home;
+        state.control.focus = FocusPane::Main;
+        assert!(!state.apply_home_key(plain(KeyCode::Char('n'))));
+        assert_eq!(state.mode, Mode::Home);
     }
 
     #[test]
