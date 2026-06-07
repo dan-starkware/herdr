@@ -2080,7 +2080,7 @@ mod tests {
 
         let app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
 
-        assert_eq!(app.state.mode, Mode::Navigate);
+        assert_eq!(app.state.mode, Mode::Home);
         assert!(app.state.release_notes.is_none());
         assert!(app.state.latest_release_notes_available);
 
