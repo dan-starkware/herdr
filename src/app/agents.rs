@@ -650,7 +650,12 @@ impl App {
 
     /// Handle a key while in [`Mode::Review`] (the branch picker).
     pub(super) fn handle_review_key(&mut self, key: crossterm::event::KeyEvent) {
-        use crossterm::event::KeyCode;
+        use crossterm::event::{KeyCode, KeyModifiers};
+        // Plain letters (no modifier) act as commands in the picker; an alt/ctrl
+        // modifier shouldn't trigger navigation.
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
                 self.state.mode = Mode::Home;
@@ -658,6 +663,11 @@ impl App {
             }
             KeyCode::Up => self.state.review_move_selection(-1),
             KeyCode::Down => self.state.review_move_selection(1),
+            // Vim-style navigation: j/k mirror the arrow keys; h/l are inert,
+            // matching the home Control/Agents lists.
+            KeyCode::Char('k') if plain => self.state.review_move_selection(-1),
+            KeyCode::Char('j') if plain => self.state.review_move_selection(1),
+            KeyCode::Char('h') | KeyCode::Char('l') if plain => {}
             // The picker is not a text input, so plain `p` (or alt+p) submits a PR.
             KeyCode::Char('p') => self.submit_pr_for_review(),
             KeyCode::Enter => self.open_review_branch(),

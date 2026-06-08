@@ -682,6 +682,54 @@ mod tests {
     }
 
     #[test]
+    fn review_picker_navigates_with_j_and_k() {
+        let mut app = app_for_mouse_test();
+        app.state.mode = Mode::Review;
+        app.state.control.review = Some(ReviewState {
+            repo: crate::workspace::Repository {
+                key: "a".into(),
+                root: "/a".into(),
+                label: "a".into(),
+            },
+            branches: vec![
+                crate::workspace::Branch {
+                    name: "main".into(),
+                    is_current: true,
+                    is_remote: false,
+                    graph_prefix: String::new(),
+                },
+                crate::workspace::Branch {
+                    name: "feat".into(),
+                    is_current: false,
+                    is_remote: false,
+                    graph_prefix: String::new(),
+                },
+            ],
+            selected: 0,
+            scroll: 0,
+        });
+
+        let key = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+
+        // `j` moves the selection down, like the Down arrow.
+        app.handle_review_key(key('j'));
+        assert_eq!(app.state.control.review.as_ref().unwrap().selected, 1);
+
+        // `k` moves the selection back up, like the Up arrow.
+        app.handle_review_key(key('k'));
+        assert_eq!(app.state.control.review.as_ref().unwrap().selected, 0);
+
+        // `h`/`l` are inert no-ops and don't move the selection.
+        app.handle_review_key(key('j'));
+        app.handle_review_key(key('h'));
+        app.handle_review_key(key('l'));
+        assert_eq!(app.state.control.review.as_ref().unwrap().selected, 1);
+
+        // The picker stays open (still in review mode).
+        assert_eq!(app.state.mode, Mode::Review);
+    }
+
+    #[test]
     fn r_renames_in_agents_pane_but_reviews_in_control_pane() {
         let mut state = AppState::test_new();
         state.mode = Mode::Home;
