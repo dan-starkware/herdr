@@ -1126,6 +1126,117 @@ impl App {
         self.state.mark_session_dirty();
     }
 
+    /// Whether the active workspace's REVIEW row is the currently focused pane.
+    /// Gates `alt+g` so the fix command only fires while reviewing.
+    pub(crate) fn review_pane_focused(&self) -> bool {
+        let Some(ws_idx) = self.state.active else {
+            return false;
+        };
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return false;
+        };
+        let focused = ws.focused_pane_id();
+        focused.is_some() && focused == ws.pane_with_role(crate::pane::PaneRole::Review)
+    }
+
+    /// alt+g: ask the active workspace's agent to fix every `CLAUDE:` comment in
+    /// the branch diff. Writes a prompt into the agent (root) pane and submits
+    /// it with Enter.
+    ///
+    /// Refuses (with a toast) when the agent already has a prompt typed in, since
+    /// our text would otherwise be concatenated onto it and the merged line
+    /// submitted. See [`Self::agent_prompt_busy`].
+    pub(crate) fn send_claude_fix_command(&mut self) {
+        let Some(ws_idx) = self.state.active else {
+            return;
+        };
+        // Pull everything we need out of the workspace first, then drop the
+        // borrow so we can call the runtime + toast.
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return;
+        };
+        let repo_root = ws
+            .worktree_space()
+            .map(|s| s.repo_root.clone())
+            .unwrap_or_else(|| ws.identity_cwd.clone());
+        let Some(branch) = ws.branch() else {
+            self.state.set_home_toast("fix failed", "agent has no branch");
+            return;
+        };
+        let Some(agent_pane) = ws.agent_pane() else {
+            self.state.set_home_toast("fix failed", "no agent pane");
+            return;
+        };
+        let base = crate::workspace::review_base(&repo_root, &branch);
+
+        // Guard: don't clobber a half-typed prompt.
+        if self.agent_prompt_busy(ws_idx, agent_pane) {
+            self.state.set_home_toast(
+                "fix skipped",
+                "agent has a prompt typed — clear it first",
+            );
+            return;
+        }
+
+        let prompt = claude_fix_prompt(&base);
+        let send_result: Result<(), String> = match self.lookup_runtime_sender(ws_idx, agent_pane)
+        {
+            None => Err("agent not running".to_string()),
+            Some(runtime) => {
+                let text_bytes = super::api_helpers::encode_api_text(runtime, &prompt);
+                runtime
+                    .try_send_bytes(bytes::Bytes::from(text_bytes))
+                    .map_err(|err| err.to_string())
+                    .and_then(|()| {
+                        // Submit as a separate Enter event, mirroring the
+                        // `pane.send_input` API path.
+                        let enter = runtime.encode_terminal_key(
+                            crossterm::event::KeyEvent::new(
+                                crossterm::event::KeyCode::Enter,
+                                crossterm::event::KeyModifiers::empty(),
+                            )
+                            .into(),
+                        );
+                        runtime
+                            .try_send_bytes(bytes::Bytes::from(enter))
+                            .map_err(|err| err.to_string())
+                    })
+            }
+        };
+        match send_result {
+            Ok(()) => self
+                .state
+                .set_home_toast("fix sent", "asked agent to fix CLAUDE: comments"),
+            Err(err) => self.state.set_home_toast("fix failed", err),
+        }
+    }
+
+    /// Best-effort: does the agent (root) pane look like it already has a prompt
+    /// typed in? Reads the cursor's row from the rendered screen and checks for
+    /// non-whitespace text between the prompt marker and the cursor. See
+    /// [`prompt_has_typed_text`] for the heuristic and its limits.
+    fn agent_prompt_busy(&self, ws_idx: usize, agent_pane: crate::layout::PaneId) -> bool {
+        let Some(runtime) = self.lookup_runtime_sender(ws_idx, agent_pane) else {
+            return false;
+        };
+        // A 0,0-origin area the size of u16::MAX leaves the returned cursor in
+        // raw viewport coordinates (no offset, never clamped out).
+        let area = ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width: u16::MAX,
+            height: u16::MAX,
+        };
+        let Some(cursor) = runtime.cursor_state(area, true) else {
+            return false;
+        };
+        let text = runtime.visible_text();
+        let Some(row) = text.split('\n').nth(cursor.y as usize) else {
+            return false;
+        };
+        prompt_has_typed_text(row, cursor.x)
+    }
+
     /// Build the (argv, cwd) for a freshly-spawned review/terminal row in the
     /// active workspace's worktree. Returns `None` (with a toast for review when
     /// the agent has no branch) when the row cannot be spawned.
@@ -1217,6 +1328,86 @@ impl App {
 /// Wrap a value in single quotes for safe interpolation into a shell command.
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Prompt-line markers an agent renders before its input (`>` for Claude Code,
+/// `❯` for shells/other TUIs). Used to locate the typed region of the input.
+const PROMPT_MARKERS: [char; 2] = ['>', '❯'];
+
+/// The prompt sent to the agent by `alt+g`. `base` is the diff base the review
+/// row uses, embedded so the agent targets exactly what's under review.
+fn claude_fix_prompt(base: &str) -> String {
+    format!(
+        "Review the diff in this branch against its base (`git diff {base}...HEAD`). \
+Find every comment that starts with `CLAUDE:` and fix the code according to that \
+comment. After applying each fix, remove the `CLAUDE:` comment."
+    )
+}
+
+/// Best-effort heuristic: does the cursor's row (`row`) already contain
+/// user-typed text to the LEFT of the cursor (`cursor_col`)?
+///
+/// We look at the slice between the last prompt marker (`>` / `❯`) before the
+/// cursor and the cursor column. Placeholder hints render to the RIGHT of the
+/// cursor, so they're naturally excluded. Returns `false` when there's no marker
+/// before the cursor (agent mid-generation, or an input layout we don't
+/// recognise) — we'd rather occasionally proceed than wrongly refuse on an empty
+/// prompt. Tuned to Claude Code's input box; multi-line input and other agents'
+/// layouts may not be detected.
+fn prompt_has_typed_text(row: &str, cursor_col: u16) -> bool {
+    let before: Vec<char> = row.chars().take(cursor_col as usize).collect();
+    let Some(marker_idx) = before.iter().rposition(|c| PROMPT_MARKERS.contains(c)) else {
+        return false;
+    };
+    before[marker_idx + 1..].iter().any(|c| !c.is_whitespace())
+}
+
+#[cfg(test)]
+mod claude_fix_tests {
+    use super::{claude_fix_prompt, prompt_has_typed_text};
+
+    #[test]
+    fn prompt_embeds_base_and_instructions() {
+        let p = claude_fix_prompt("origin/master");
+        assert!(p.contains("git diff origin/master...HEAD"));
+        assert!(p.contains("CLAUDE:"));
+        assert!(p.contains("remove"));
+    }
+
+    #[test]
+    fn empty_prompt_is_not_busy() {
+        // Cursor parked just after "> " in Claude Code's input box.
+        let row = "│ > ";
+        // cursor at column 4 (one past the space following the marker).
+        assert!(!prompt_has_typed_text(row, 4));
+    }
+
+    #[test]
+    fn typed_text_is_busy() {
+        let row = "│ > fix the widget";
+        let col = row.chars().count() as u16;
+        assert!(prompt_has_typed_text(row, col));
+    }
+
+    #[test]
+    fn placeholder_to_right_of_cursor_is_not_busy() {
+        // Cursor sits right after "> "; the dim placeholder is to its right.
+        let row = "│ > Try \"edit a file\"";
+        assert!(!prompt_has_typed_text(row, 4));
+    }
+
+    #[test]
+    fn no_marker_defaults_to_not_busy() {
+        // A row with no prompt marker (e.g. agent mid-generation output).
+        assert!(!prompt_has_typed_text("compiling crate foo...", 10));
+    }
+
+    #[test]
+    fn shell_prompt_marker_detected() {
+        let row = "❯ ls -la";
+        let col = row.chars().count() as u16;
+        assert!(prompt_has_typed_text(row, col));
+    }
 }
 
 pub(super) enum AgentStartError {

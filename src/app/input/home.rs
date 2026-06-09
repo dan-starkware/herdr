@@ -83,6 +83,14 @@ impl App {
                     self.toggle_terminal_row();
                     return false;
                 }
+                // alt+g, while the review row is focused, tells the workspace's
+                // agent to fix every `CLAUDE:` comment in the branch diff. It
+                // writes a prompt into the agent pane and submits it, so it runs
+                // at the App level like the other row commands.
+                KeyCode::Char('g') if self.review_pane_focused() => {
+                    self.send_claude_fix_command();
+                    return false;
+                }
                 // alt+z zooms the focused Main pane (tmux-style): hide the other
                 // rows to fill Main with the focused one, or restore them. No-ops
                 // unless there are multiple rows (e.g. review + agent).
