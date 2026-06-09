@@ -81,6 +81,21 @@ fn render_review_half(app: &AppState, frame: &mut Frame, area: Rect) {
         return;
     };
 
+    // The branch currently checked out in the Main pane (the active workspace's
+    // worktree), when that worktree belongs to the repo being browsed. It gets a
+    // distinct filled accent node in the list — like `gt ls`'s checked-out
+    // marker — so you can see at a glance which branch is loaded in Main.
+    let main_pane_branch = app
+        .active
+        .and_then(|idx| app.workspaces.get(idx))
+        .and_then(|ws| {
+            let space = ws.worktree_space()?;
+            (crate::worktree::canonical_or_original(&space.repo_root)
+                == crate::worktree::canonical_or_original(&review.repo.root))
+            .then(|| ws.branch())
+            .flatten()
+        });
+
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(" review: {}", review.repo.label),
@@ -123,6 +138,7 @@ fn render_review_half(app: &AppState, frame: &mut Frame, area: Rect) {
             }
             let y = body.y + row as u16;
             let selected = idx == review.selected;
+            let is_main_pane = main_pane_branch.as_deref() == Some(branch.name.as_str());
             if selected {
                 let buf = frame.buffer_mut();
                 for x in body.x..body.x + body.width {
@@ -138,11 +154,18 @@ fn render_review_half(app: &AppState, frame: &mut Frame, area: Rect) {
             };
             // With Graphite's stack graph, show its connector art (`│ ◯  `) and
             // let the node convey the current branch; otherwise fall back to a
-            // simple `●` marker for the flat branch list.
+            // simple `●` marker for the flat branch list. The branch loaded in
+            // the Main pane gets a filled `◉` accent node either way.
             let spans = if branch.graph_prefix.is_empty() {
-                let marker = if branch.is_current { "● " } else { "  " };
+                let (marker, marker_color) = if is_main_pane {
+                    ("◉ ", p.accent)
+                } else if branch.is_current {
+                    ("● ", p.green)
+                } else {
+                    ("  ", p.green)
+                };
                 vec![
-                    Span::styled(marker, Style::default().fg(p.green)),
+                    Span::styled(marker, Style::default().fg(marker_color)),
                     Span::styled(
                         truncate(&branch.name, body.width.saturating_sub(3) as usize),
                         label_style,
@@ -151,14 +174,24 @@ fn render_review_half(app: &AppState, frame: &mut Frame, area: Rect) {
             } else {
                 let prefix_w = branch.graph_prefix.chars().count();
                 let avail = (body.width as usize).saturating_sub(1 + prefix_w);
-                let node_style = if branch.is_current {
+                // Promote the Main pane's branch to a filled node in the accent
+                // colour; gt already marks the repo's own HEAD green, and the
+                // remaining stack nodes stay dim.
+                let prefix = if is_main_pane {
+                    branch.graph_prefix.replacen('◯', "◉", 1)
+                } else {
+                    branch.graph_prefix.clone()
+                };
+                let node_style = if is_main_pane {
+                    Style::default().fg(p.accent)
+                } else if branch.is_current {
                     Style::default().fg(p.green)
                 } else {
                     Style::default().fg(p.overlay0)
                 };
                 vec![
                     Span::styled(" ", Style::default()),
-                    Span::styled(branch.graph_prefix.clone(), node_style),
+                    Span::styled(prefix, node_style),
                     Span::styled(truncate(&branch.name, avail), label_style),
                 ]
             };

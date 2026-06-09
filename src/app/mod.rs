@@ -396,7 +396,6 @@ impl App {
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
             request_reload_config: false,
-            request_self_update: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
             requested_new_tab_name: None,
@@ -751,20 +750,6 @@ impl App {
             if self.state.request_reload_config {
                 self.state.request_reload_config = false;
                 self.reload_config();
-                needs_render = true;
-            }
-
-            if self.state.request_self_update {
-                self.state.request_self_update = false;
-                // Live handoff lives on the headless server; monolithic
-                // `--no-session` mode has no server to hand panes off to.
-                self.state.toast = Some(crate::app::state::ToastNotification {
-                    kind: crate::app::state::ToastKind::NeedsAttention,
-                    title: "update unavailable".to_string(),
-                    context: "alt+u needs a herdr session (not --no-session)".to_string(),
-                    position: None,
-                    target: None,
-                });
                 needs_render = true;
             }
 
