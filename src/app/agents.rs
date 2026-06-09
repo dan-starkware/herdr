@@ -1013,6 +1013,7 @@ impl App {
             if let Some(agent) = ws.agent_pane() {
                 if let Some(tab_idx) = ws.find_tab_index_for_pane(agent) {
                     ws.tabs[tab_idx].layout.focus_pane(agent);
+                    ws.tabs[tab_idx].layout.equalize_vertical();
                 }
             }
             self.state.mark_session_dirty();
@@ -1055,6 +1056,7 @@ impl App {
                 if let Some(new) = ws.reattach_row(target, terminal_id, role) {
                     if let Some(tab_idx) = ws.find_tab_index_for_pane(new) {
                         ws.tabs[tab_idx].layout.focus_pane(new);
+                        ws.tabs[tab_idx].layout.equalize_vertical();
                     }
                     match role {
                         PaneRole::Review => ws.detached_review = None,
@@ -1122,6 +1124,7 @@ impl App {
                 pane.role = role;
             }
             ws.tabs[tab_idx].layout.focus_pane(new_pane_id);
+            ws.tabs[tab_idx].layout.equalize_vertical();
         }
         self.state.mark_session_dirty();
     }

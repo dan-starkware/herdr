@@ -176,6 +176,16 @@ impl TileLayout {
         true
     }
 
+    /// Rebalance every vertical split so that all leaves joined by vertical
+    /// splits end up with equal height, regardless of how the tree leans. Each
+    /// vertical split's ratio is set proportional to the pane counts of its two
+    /// subtrees, which makes per-leaf heights uniform across the stacked rows
+    /// (e.g. the review/terminal/agent rows each get exactly one third).
+    /// Horizontal splits are left untouched.
+    pub fn equalize_vertical(&mut self) {
+        equalize_vertical(&mut self.root);
+    }
+
     /// Set the ratio of a split node at the given path.
     pub fn set_ratio_at(&mut self, path: &[bool], ratio: f32) {
         set_ratio_at(&mut self.root, path, ratio.clamp(0.1, 0.9));
@@ -353,6 +363,29 @@ fn range_center_distance(a_start: u16, a_len: u16, b_start: u16, b_len: u16) -> 
 }
 
 // --- Tree operations ---
+
+/// Recursively rebalance vertical splits so each leaf reachable through
+/// vertical splits gets equal height. Returns the leaf count of `node` so the
+/// parent can weight its own ratio. Horizontal splits keep their own ratios but
+/// still contribute their leaf count to the parent's weighting.
+fn equalize_vertical(node: &mut Node) -> usize {
+    match node {
+        Node::Pane(_) => 1,
+        Node::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            let f = equalize_vertical(first);
+            let s = equalize_vertical(second);
+            if *direction == Direction::Vertical {
+                *ratio = valid_split_ratio(f as f32 / (f + s) as f32);
+            }
+            f + s
+        }
+    }
+}
 
 fn count_panes(node: &Node) -> usize {
     match node {
@@ -692,6 +725,73 @@ mod tests {
         assert_eq!(splits.len(), 1);
         assert_eq!(splits[0].0, Direction::Horizontal);
         assert!((splits[0].1 - 0.333).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn equalize_vertical_makes_right_leaning_stack_equal() {
+        // review / (terminal / agent) — the spine leans right.
+        let mut layout = TileLayout::from_saved(
+            Node::Split {
+                direction: Direction::Vertical,
+                ratio: 0.5,
+                first: Box::new(Node::Pane(pane(1))),
+                second: Box::new(Node::Split {
+                    direction: Direction::Vertical,
+                    ratio: 0.5,
+                    first: Box::new(Node::Pane(pane(2))),
+                    second: Box::new(Node::Pane(pane(3))),
+                }),
+            },
+            pane(1),
+        );
+
+        layout.equalize_vertical();
+
+        for (_, rect) in pane_rects(&layout) {
+            assert!((rect.height as i32 - 40 / 3).abs() <= 1, "height {rect:?}");
+        }
+    }
+
+    #[test]
+    fn equalize_vertical_makes_left_leaning_stack_equal() {
+        // (review / terminal) / agent — the spine leans left.
+        let mut layout = TileLayout::from_saved(
+            Node::Split {
+                direction: Direction::Vertical,
+                ratio: 0.5,
+                first: Box::new(Node::Split {
+                    direction: Direction::Vertical,
+                    ratio: 0.5,
+                    first: Box::new(Node::Pane(pane(1))),
+                    second: Box::new(Node::Pane(pane(2))),
+                }),
+                second: Box::new(Node::Pane(pane(3))),
+            },
+            pane(1),
+        );
+
+        layout.equalize_vertical();
+
+        for (_, rect) in pane_rects(&layout) {
+            assert!((rect.height as i32 - 40 / 3).abs() <= 1, "height {rect:?}");
+        }
+    }
+
+    #[test]
+    fn equalize_vertical_leaves_horizontal_splits_untouched() {
+        let mut layout = sample_layout();
+        let before = split_snapshot(&layout);
+
+        layout.equalize_vertical();
+
+        let after = split_snapshot(&layout);
+        // Horizontal split ratios are preserved; only vertical ones may move.
+        for ((dir_b, ratio_b), (dir_a, ratio_a)) in before.iter().zip(after.iter()) {
+            assert_eq!(dir_b, dir_a);
+            if *dir_b == Direction::Horizontal {
+                assert!((ratio_b - ratio_a).abs() < f32::EPSILON);
+            }
+        }
     }
 
     #[test]
