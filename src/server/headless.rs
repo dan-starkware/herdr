@@ -520,6 +520,14 @@ impl HeadlessServer {
                 crate::render_prof::event("full_render_cause.config_reload");
             }
 
+            if self.app.state.request_self_update {
+                self.app.state.request_self_update = false;
+                self.trigger_self_update_handoff();
+                needs_render = true;
+                needs_full_render = true;
+                crate::render_prof::event("full_render_cause.self_update");
+            }
+
             if latest_app_client(&self.clients).is_some() && self.app.ensure_default_workspace() {
                 needs_render = true;
                 needs_full_render = true;
@@ -725,6 +733,38 @@ impl HeadlessServer {
         }
         if !host_terminal_theme.is_empty() {
             self.app.set_host_terminal_theme(host_terminal_theme);
+        }
+    }
+
+    /// Handle an `alt+u` self-update request: live-hand-off this session to the
+    /// herdr binary now installed at the path this server launched from.
+    ///
+    /// `import_exe = None` makes the handoff re-spawn `current_exe()`'s path,
+    /// which on Linux resolves to whatever binary currently lives there — so a
+    /// rebuilt/reinstalled herdr is picked up without losing live panes.
+    ///
+    /// `perform_live_handoff` only drains panes after the replacement server
+    /// has committed; every earlier failure (e.g. an incompatible handoff
+    /// protocol in the new binary) rolls back and leaves this server running
+    /// with its panes intact. So on error we just surface a clean toast and do
+    /// nothing — the running session is unchanged.
+    fn trigger_self_update_handoff(&mut self) {
+        let params = crate::api::schema::ServerLiveHandoffParams::default();
+        match self.perform_live_handoff(params) {
+            Ok(()) => {
+                info!("alt+u self-update: live handoff committed; reconnecting to updated server");
+            }
+            Err(err) => {
+                warn!(err = %err, "alt+u self-update: live handoff failed; keeping current server");
+                self.app.state.toast = Some(crate::app::state::ToastNotification {
+                    kind: crate::app::state::ToastKind::NeedsAttention,
+                    title: "update failed".to_string(),
+                    context: "could not hot-swap to the installed herdr; panes are unchanged"
+                        .to_string(),
+                    position: None,
+                    target: None,
+                });
+            }
         }
     }
 

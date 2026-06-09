@@ -1306,6 +1306,12 @@ pub struct AppState {
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
     pub request_reload_config: bool,
+    /// Set by `alt+u` to hot-swap the running session to the herdr binary now
+    /// installed at the path this server launched from, preserving live panes
+    /// via the existing live-handoff machinery. The headless run loop consumes
+    /// this; in monolithic `--no-session` mode there is no server to hand off
+    /// to, so the in-process loop surfaces a toast instead.
+    pub request_self_update: bool,
     /// Set when the headless server should ask attached clients to reload
     /// their client-local sound config from disk.
     pub request_client_config_reload: bool,
@@ -1601,6 +1607,7 @@ impl AppState {
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
             request_reload_config: false,
+            request_self_update: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
             requested_new_tab_name: None,

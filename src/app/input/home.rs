@@ -69,6 +69,16 @@ impl App {
             return false;
         }
 
+        // alt+u hot-swaps the running session to the herdr binary now installed
+        // at the path this server launched from, picking up a freshly built/
+        // installed binary without losing live panes. It is a session-level
+        // action handled by the run loop (live handoff lives on the headless
+        // server), so we only flag the request here — see `request_self_update`.
+        if event.code == KeyCode::Char('u') && event.modifiers.contains(KeyModifiers::ALT) {
+            self.state.request_self_update = true;
+            return false;
+        }
+
         // alt+r / alt+t toggle the in-worktree review / terminal rows of the
         // active workspace when Main is focused. These spawn/attach panes, so
         // they run at the App level. Only fire on the Main surface so the review
@@ -1335,6 +1345,15 @@ mod tests {
         let entries = crate::ui::agent_panel_entries_all(&app.state);
         // Only the agent row counts; the review row is excluded.
         assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn alt_u_requests_self_update() {
+        let mut app = app_for_mouse_test();
+        assert!(!app.state.request_self_update);
+        // alt+u flags a self-update; the key is fully consumed (not forwarded).
+        assert!(!app.dispatch_home_key(alt('u')));
+        assert!(app.state.request_self_update);
     }
 
     #[test]
