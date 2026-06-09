@@ -83,6 +83,13 @@ impl App {
                     self.toggle_terminal_row();
                     return false;
                 }
+                // alt+z zooms the focused Main pane (tmux-style): hide the other
+                // rows to fill Main with the focused one, or restore them. No-ops
+                // unless there are multiple rows (e.g. review + agent).
+                KeyCode::Char('z') => {
+                    self.state.toggle_zoom();
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -323,7 +330,7 @@ impl AppState {
             KeyCode::Char('l') if alt => self.set_home_focus(FocusPane::Main),
 
             // Commands.
-            KeyCode::Char('q') if cmd => self.should_quit = true,
+            KeyCode::Char('q') if cmd => self.mode = Mode::ConfirmQuit,
             KeyCode::Char(',') if cmd => self.mode = Mode::Settings,
             KeyCode::Char('?') if cmd => self.mode = Mode::KeybindHelp,
             // `r` renames the selected agent in the Agents pane. (Review now
@@ -428,10 +435,16 @@ impl AppState {
         }
     }
 
-    /// Enter: activate the current selection without moving focus.
+    /// Enter: activate the current selection. In the Agents pane this also moves
+    /// focus into Main, so Enter drops you straight into the selected agent.
     fn home_activate(&mut self) {
         match self.control.focus {
-            FocusPane::Agents => self.home_focus_selected_agent_workspace(),
+            FocusPane::Agents => {
+                self.home_focus_selected_agent_workspace();
+                if self.active.is_some() {
+                    self.set_home_focus(FocusPane::Main);
+                }
+            }
             // Enter on a repo opens the Graphite branch picker to create an agent.
             FocusPane::Control => self.open_create_agent_branch_picker(),
             FocusPane::Main => {}
@@ -524,6 +537,19 @@ impl AppState {
         }
     }
 
+    /// Handle a key while confirming a quit ("are you sure?").
+    pub(crate) fn handle_confirm_quit_key(&mut self, key: crossterm::event::KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                self.should_quit = true;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.mode = Mode::Home;
+            }
+            _ => {}
+        }
+    }
+
     /// Tear down the selected agent's workspace (kills its panes/PTYs) and clamp
     /// the home selection back into range.
     fn kill_selected_agent(&mut self) {
@@ -532,9 +558,22 @@ impl AppState {
             return;
         };
 
+        // Capture the managed worktree (if any) before tearing down the
+        // workspace, so we can delete its checkout once the PTYs inside it die.
+        let worktree_to_remove = self.workspaces.get(ws_idx).and_then(|ws| {
+            ws.worktree_space().filter(|s| s.is_linked_worktree).map(|s| {
+                (s.repo_root.clone(), s.checkout_path.clone())
+            })
+        });
+
         let workspace_terminal_ids = self.terminal_ids_for_workspace(ws_idx);
         self.workspaces.remove(ws_idx);
         self.remove_unattached_terminal_ids(workspace_terminal_ids);
+
+        // Now that nothing inside the worktree is running, delete its checkout.
+        if let Some((repo_root, checkout_path)) = worktree_to_remove {
+            self.remove_linked_worktree_dir(&repo_root, &checkout_path);
+        }
 
         // Adjust active/selected for the removed (and shifted) workspaces.
         match self.active {
@@ -558,6 +597,32 @@ impl AppState {
             self.control.selected_agent = count - 1;
         }
         self.mark_session_dirty();
+    }
+
+    /// Delete a managed linked worktree's checkout directory. Tries a plain
+    /// `git worktree remove` first and forces it when the checkout is dirty, so
+    /// killing an agent always frees its worktree. The branch itself is kept.
+    fn remove_linked_worktree_dir(
+        &mut self,
+        repo_root: &std::path::Path,
+        checkout_path: &std::path::Path,
+    ) {
+        let command = crate::worktree::build_worktree_remove_command(repo_root, checkout_path, false);
+        match crate::worktree::run_worktree_command(&command) {
+            Ok(()) => {}
+            Err(err) if crate::worktree::is_dirty_worktree_remove_error(&err) => {
+                let forced =
+                    crate::worktree::build_worktree_remove_command(repo_root, checkout_path, true);
+                if let Err(err) = crate::worktree::run_worktree_command(&forced) {
+                    tracing::warn!(error = %err, "kill-agent worktree remove (forced) failed");
+                    self.set_home_toast("worktree not removed", err);
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "kill-agent worktree remove failed");
+                self.set_home_toast("worktree not removed", err);
+            }
+        }
     }
 
     fn request_home_submit_pr(&mut self) {
@@ -641,8 +706,19 @@ mod tests {
         assert!(state.apply_home_key(alt(',')));
         assert_eq!(state.mode, Mode::Settings);
 
+        // alt+q now opens a confirm prompt rather than quitting immediately;
+        // confirming with `y` sets the quit flag, cancelling with `n` returns home.
         let mut state = AppState::test_new();
         assert!(state.apply_home_key(alt('q')));
+        assert_eq!(state.mode, Mode::ConfirmQuit);
+        assert!(!state.should_quit);
+
+        state.handle_confirm_quit_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()));
+        assert_eq!(state.mode, Mode::Home);
+        assert!(!state.should_quit);
+
+        assert!(state.apply_home_key(alt('q')));
+        state.handle_confirm_quit_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()));
         assert!(state.should_quit);
     }
 
@@ -686,6 +762,10 @@ mod tests {
             crate::workspace::Workspace::test_new("a"),
             crate::workspace::Workspace::test_new("b"),
         ];
+        // An agent exists iff its worktree is open, so back both with worktrees.
+        for ws in &mut state.workspaces {
+            ws.attach_test_worktree();
+        }
         state.ensure_test_terminals();
         // Only agent terminals appear in the agents half, so name them.
         let terminal_ids: Vec<_> = state
@@ -867,22 +947,68 @@ mod tests {
     }
 
     #[test]
-    fn space_toggles_new_branch_without_typing_into_name() {
+    fn space_toggles_new_branch_on_toggle_row_only() {
+        use crate::app::state::CreateFormRow;
         let mut app = app_for_mouse_test();
         app.state.mode = Mode::CreateAgent;
         app.state.name_input = "agent".to_string();
         app.state.control.create_new_branch = false;
+        app.state.control.create_form_row = CreateFormRow::Name;
 
         let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::empty());
-        app.handle_create_agent_key(space);
-        assert!(app.state.control.create_new_branch);
-        // The space must not be appended to the name.
-        assert_eq!(app.state.name_input, "agent");
-
-        // Toggling again flips it back, still leaving the name untouched.
+        // On the name row, space is ignored — neither the name nor the toggle move.
         app.handle_create_agent_key(space);
         assert!(!app.state.control.create_new_branch);
         assert_eq!(app.state.name_input, "agent");
+
+        // Down to the toggle row (name → branch → toggle), then space flips it.
+        app.handle_create_agent_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        app.handle_create_agent_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        assert_eq!(app.state.control.create_form_row, CreateFormRow::NewBranchToggle);
+        app.handle_create_agent_key(space);
+        assert!(app.state.control.create_new_branch);
+        assert_eq!(app.state.name_input, "agent");
+
+        // Toggling again flips it back.
+        app.handle_create_agent_key(space);
+        assert!(!app.state.control.create_new_branch);
+    }
+
+    #[test]
+    fn create_form_rows_navigate_and_edit_independently() {
+        use crate::app::state::CreateFormRow;
+        let mut app = app_for_mouse_test();
+        app.state.mode = Mode::CreateAgent;
+        app.state.control.reset_create_form();
+        app.state.control.create_base_branch = Some("main".to_string());
+
+        // The name row is active first, so typing edits the name straight away.
+        for c in "myagent".chars() {
+            app.handle_create_agent_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+        }
+        assert_eq!(app.state.name_input, "myagent");
+        assert_eq!(app.state.control.create_form_row, CreateFormRow::Name);
+
+        // Down to the base-branch row and edit it.
+        app.handle_create_agent_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        assert_eq!(app.state.control.create_form_row, CreateFormRow::Base);
+        app.handle_create_agent_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()));
+        assert_eq!(app.state.control.create_base_branch.as_deref(), Some("mai"));
+
+        // Turn on the new-branch toggle, which reveals the new-branch-name row.
+        app.handle_create_agent_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        app.handle_create_agent_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::empty()));
+        assert!(app.state.control.create_new_branch);
+        app.handle_create_agent_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        assert_eq!(
+            app.state.control.create_form_row,
+            CreateFormRow::NewBranchName
+        );
+        for c in "feat".chars() {
+            app.handle_create_agent_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+        }
+        assert_eq!(app.state.control.create_branch_name, "feat");
+        assert_eq!(app.state.name_input, "myagent", "name row untouched");
     }
 
     #[test]
@@ -924,7 +1050,9 @@ mod tests {
         // Set up a single agent so the Agents pane has a selection to rename.
         state.mode = Mode::Home;
         state.control.review = None;
-        state.workspaces = vec![crate::workspace::Workspace::test_new("a")];
+        let mut agent_ws = crate::workspace::Workspace::test_new("a");
+        agent_ws.attach_test_worktree();
+        state.workspaces = vec![agent_ws];
         state.ensure_test_terminals();
         let terminal_id = {
             let pane = state.workspaces[0].tabs[0].root_pane;
@@ -1137,6 +1265,7 @@ mod tests {
     ) {
         let mut app = app_for_mouse_test();
         let mut ws = crate::workspace::Workspace::test_new("agent");
+        ws.attach_test_worktree();
         let agent = ws.agent_pane().unwrap();
         let review_tid = TerminalId::alloc();
         let review = ws

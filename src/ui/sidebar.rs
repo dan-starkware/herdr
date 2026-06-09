@@ -48,8 +48,11 @@ pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, 
     (ws_area, detail_area)
 }
 
-/// Every running agent across all workspaces, independent of the (legacy)
-/// `agent_panel_scope` toggle. Used by the keyboard-first home agents-half.
+/// Every agent across all workspaces. An agent exists iff its worktree is open,
+/// so this yields exactly one entry per open worktree — collapsing a worktree's
+/// extra rows (review/terminal) and any extra tabs into a single agent entry,
+/// represented by the worktree's agent (root) pane. Used by the keyboard-first
+/// home agents-half.
 pub(crate) fn agent_panel_entries_all(app: &AppState) -> Vec<AgentPanelEntry> {
     let empty_runtimes = TerminalRuntimeRegistry::new();
     all_workspace_agent_panel_entries(app, &empty_runtimes)
@@ -62,24 +65,31 @@ fn all_workspace_agent_panel_entries(
     app.workspaces
         .iter()
         .enumerate()
-        .flat_map(|(ws_idx, ws)| {
+        .filter_map(|(ws_idx, ws)| {
+            // One entry per OPEN WORKTREE: skip workspaces with no worktree.
+            ws.worktree_space()?;
             let multi_tab = ws.tabs.len() > 1;
             let workspace_label = ws.display_name_from(&app.terminals, terminal_runtimes);
-            ws.pane_details(&app.terminals)
-                .into_iter()
-                .map(move |detail| AgentPanelEntry {
-                    ws_idx,
-                    tab_idx: detail.tab_idx,
-                    pane_id: detail.pane_id,
-                    primary_label: workspace_label.clone(),
-                    primary_tab_label: multi_tab.then_some(detail.tab_label),
-                    agent_label: Some(detail.agent_label),
-                    state: detail.state,
-                    seen: detail.seen,
-                    custom_status: detail.custom_status,
-                    state_labels: detail.state_labels,
-                    working_since: detail.working_since,
-                })
+            // Represent the worktree by its agent (root) pane; fall back to the
+            // first agent pane detail if the active tab's root isn't one.
+            let details = ws.pane_details(&app.terminals);
+            let agent_pane = ws.agent_pane();
+            let detail = agent_pane
+                .and_then(|id| details.iter().find(|d| d.pane_id == id))
+                .or_else(|| details.first())?;
+            Some(AgentPanelEntry {
+                ws_idx,
+                tab_idx: detail.tab_idx,
+                pane_id: detail.pane_id,
+                primary_label: workspace_label,
+                primary_tab_label: multi_tab.then(|| detail.tab_label.clone()),
+                agent_label: Some(detail.agent_label.clone()),
+                state: detail.state,
+                seen: detail.seen,
+                custom_status: detail.custom_status.clone(),
+                state_labels: detail.state_labels.clone(),
+                working_since: detail.working_since,
+            })
         })
         .collect()
 }

@@ -1809,11 +1809,12 @@ mod tests {
 
     #[test]
     fn next_agent_cycles_agent_panel_entries_in_all_scope() {
+        // One entry per open worktree, so each agent is its own workspace.
         let mut first = Workspace::test_new("one");
+        first.attach_test_worktree();
         let first_root = first.tabs[0].root_pane;
-        let first_second = first.test_split(Direction::Horizontal);
-        first.tabs[0].layout.focus_pane(first_root);
-        let second = Workspace::test_new("two");
+        let mut second = Workspace::test_new("two");
+        second.attach_test_worktree();
         let second_root = second.tabs[0].root_pane;
 
         let mut state = AppState::test_new();
@@ -1824,29 +1825,27 @@ mod tests {
         state.mode = Mode::Home;
         state.agent_panel_scope = crate::app::state::AgentPanelScope::AllWorkspaces;
         mark_agent(&mut state, 0, 0, first_root);
-        mark_agent(&mut state, 0, 0, first_second);
         mark_agent(&mut state, 1, 0, second_root);
-
-        state.next_agent();
-        assert_eq!(state.active, Some(0));
-        assert_eq!(state.workspaces[0].focused_pane_id(), Some(first_second));
 
         state.next_agent();
         assert_eq!(state.active, Some(1));
         assert_eq!(state.workspaces[1].focused_pane_id(), Some(second_root));
 
-        state.previous_agent();
+        state.next_agent();
         assert_eq!(state.active, Some(0));
-        assert_eq!(state.workspaces[0].focused_pane_id(), Some(first_second));
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(first_root));
+
+        state.previous_agent();
+        assert_eq!(state.active, Some(1));
+        assert_eq!(state.workspaces[1].focused_pane_id(), Some(second_root));
     }
 
     #[test]
     fn focus_agent_entry_uses_agent_panel_order() {
         let mut first = Workspace::test_new("one");
-        let first_root = first.tabs[0].root_pane;
-        let first_second = first.test_split(Direction::Horizontal);
-        first.tabs[0].layout.focus_pane(first_root);
-        let second = Workspace::test_new("two");
+        first.attach_test_worktree();
+        let mut second = Workspace::test_new("two");
+        second.attach_test_worktree();
         let second_root = second.tabs[0].root_pane;
 
         let mut state = AppState::test_new();
@@ -1855,11 +1854,12 @@ mod tests {
         state.selected = 0;
         state.mode = Mode::Home;
         state.agent_panel_scope = crate::app::state::AgentPanelScope::AllWorkspaces;
+        let first_root = state.workspaces[0].tabs[0].root_pane;
         mark_agent(&mut state, 0, 0, first_root);
-        mark_agent(&mut state, 0, 0, first_second);
         mark_agent(&mut state, 1, 0, second_root);
 
-        assert!(state.focus_agent_entry(2));
+        // Entries are ordered by workspace: index 1 is the second worktree.
+        assert!(state.focus_agent_entry(1));
 
         assert_eq!(state.active, Some(1));
         assert_eq!(state.workspaces[1].focused_pane_id(), Some(second_root));
@@ -1868,6 +1868,7 @@ mod tests {
     #[test]
     fn focus_agent_entry_succeeds_for_already_focused_agent() {
         let mut state = app_with_workspaces(&["one"]);
+        state.workspaces[0].attach_test_worktree();
         let root = state.workspaces[0].tabs[0].root_pane;
         state.agent_panel_scope = crate::app::state::AgentPanelScope::AllWorkspaces;
         mark_agent(&mut state, 0, 0, root);

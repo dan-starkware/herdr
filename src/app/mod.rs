@@ -1344,6 +1344,7 @@ impl App {
             Mode::CreateAgent => self.handle_create_agent_key(key_event),
             Mode::RenameAgent => self.handle_rename_agent_key(key_event),
             Mode::ConfirmKill => self.state.handle_confirm_kill_key(key_event),
+            Mode::ConfirmQuit => self.state.handle_confirm_quit_key(key_event),
             Mode::ConfirmCreateBranch => self.handle_confirm_create_branch_key(key_event),
             Mode::Review => self.handle_review_key(key_event),
             Mode::KeybindHelp => input::handle_keybind_help_key(&mut self.state, key_event),

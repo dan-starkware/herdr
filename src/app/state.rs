@@ -716,6 +716,8 @@ pub enum Mode {
     CreateAgent,
     /// Confirm killing the selected agent.
     ConfirmKill,
+    /// Confirm quitting herdr ("are you sure?").
+    ConfirmQuit,
     /// Confirm creating a new branch when the chosen base is checked out
     /// elsewhere (the create-agent flow's "already checked out" fallback).
     ConfirmCreateBranch,
@@ -746,6 +748,7 @@ impl Mode {
             Mode::Home
                 | Mode::CreateAgent
                 | Mode::ConfirmKill
+                | Mode::ConfirmQuit
                 | Mode::ConfirmCreateBranch
                 | Mode::RenameAgent
                 | Mode::Review
@@ -816,6 +819,33 @@ pub struct ReviewState {
     pub scroll: usize,
 }
 
+/// A row in the create-agent form. Rows are navigated with up/down and the
+/// active row is the one currently editable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CreateFormRow {
+    /// The agent name (also the worktree directory name).
+    #[default]
+    Name,
+    /// The base branch the worktree is created from.
+    Base,
+    /// The "create a new branch?" checkbox.
+    NewBranchToggle,
+    /// The name for the new branch (only present when the toggle is on).
+    NewBranchName,
+}
+
+impl CreateFormRow {
+    /// The form rows in display/navigation order, given whether the new-branch
+    /// toggle is on (which reveals the [`Self::NewBranchName`] row).
+    pub fn visible(new_branch: bool) -> Vec<Self> {
+        let mut rows = vec![Self::Name, Self::Base, Self::NewBranchToggle];
+        if new_branch {
+            rows.push(Self::NewBranchName);
+        }
+        rows
+    }
+}
+
 /// State backing the keyboard-first control surface: the repository registry and
 /// the focus/selection model for the home screen.
 #[derive(Debug, Clone, Default)]
@@ -843,6 +873,38 @@ pub struct ControlState {
     /// Whether the create-agent flow should create a new branch on top of the
     /// chosen base (vs. checking out the existing base branch).
     pub create_new_branch: bool,
+    /// Name for the new branch when [`Self::create_new_branch`] is on. Empty
+    /// means "use the agent name verbatim".
+    pub create_branch_name: String,
+    /// The currently-active (editable) row of the create-agent form.
+    pub create_form_row: CreateFormRow,
+    /// Path of the other worktree holding the base branch, when the create flow
+    /// hit an "already checked out elsewhere" conflict. Lets the conflict prompt
+    /// offer to detach that worktree.
+    pub create_conflict_worktree: Option<std::path::PathBuf>,
+}
+
+impl ControlState {
+    /// Move the active create-form row by `delta`, clamped to the rows currently
+    /// visible (the new-branch-name row only exists when the toggle is on).
+    pub fn move_create_form_row(&mut self, delta: isize) {
+        let rows = CreateFormRow::visible(self.create_new_branch);
+        let current = rows
+            .iter()
+            .position(|row| *row == self.create_form_row)
+            .unwrap_or(0);
+        let next = (current as isize + delta).clamp(0, rows.len() as isize - 1) as usize;
+        self.create_form_row = rows[next];
+    }
+
+    /// Reset the create-agent form to its initial state.
+    pub fn reset_create_form(&mut self) {
+        self.create_base_branch = None;
+        self.create_new_branch = false;
+        self.create_branch_name.clear();
+        self.create_form_row = CreateFormRow::Name;
+        self.create_conflict_worktree = None;
+    }
 }
 
 impl ControlState {

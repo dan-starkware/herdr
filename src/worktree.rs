@@ -176,6 +176,30 @@ pub(crate) fn build_worktree_add_existing_branch_command(
     }
 }
 
+/// `git -C <worktree_path> checkout --detach` — detach the given worktree's HEAD
+/// at its current commit, freeing the branch it had checked out so another
+/// worktree can claim it. The commit hash stays the same; only the ref moves.
+pub(crate) fn build_worktree_detach_command(worktree_path: &Path) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            worktree_path.display().to_string(),
+            "checkout".to_string(),
+            "--detach".to_string(),
+        ],
+    }
+}
+
+/// Find the path of the worktree that currently has `branch` checked out, if any.
+pub(crate) fn worktree_path_for_branch(repo_root: &Path, branch: &str) -> Option<PathBuf> {
+    list_existing_worktrees(repo_root)
+        .ok()?
+        .into_iter()
+        .find(|wt| wt.branch.as_deref() == Some(branch))
+        .map(|wt| wt.path)
+}
+
 /// True when a `git worktree add` failure is because the requested branch is
 /// already checked out in another worktree (git refuses to check the same
 /// branch out twice). Matches the several phrasings git uses across versions.
@@ -419,6 +443,34 @@ prunable stale
                 "feature".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn detach_command_checks_out_detached_in_the_other_worktree() {
+        let command = build_worktree_detach_command(Path::new("/w/herdr/issue-137"));
+        assert_eq!(command.program, "git");
+        assert_eq!(
+            command.args,
+            vec!["-C", "/w/herdr/issue-137", "checkout", "--detach"]
+        );
+    }
+
+    #[test]
+    fn worktree_path_for_branch_finds_the_holding_checkout() {
+        let repo = create_committed_repo("worktree-branch-lookup");
+        let checkout = unique_temp_path("worktree-branch-lookup-checkout");
+        let branch = "worktree/lookup-me";
+
+        let add = build_worktree_add_new_branch_command(&repo, &checkout, branch, "HEAD");
+        run_worktree_command(&add).unwrap();
+
+        let found = worktree_path_for_branch(&repo, branch).expect("branch should be located");
+        assert_eq!(canonical_or_original(&found), canonical_or_original(&checkout));
+        assert_eq!(worktree_path_for_branch(&repo, "no-such-branch"), None);
+
+        let remove = build_worktree_remove_command(&repo, &checkout, false);
+        run_worktree_command(&remove).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]

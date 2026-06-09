@@ -859,6 +859,20 @@ impl Workspace {
         self.test_runtimes.insert(pane_id, runtime);
     }
 
+    /// Mark this test workspace as backed by an open (linked) worktree, so it
+    /// shows up as an agent. The paths point at a non-existent temp directory so
+    /// any `git worktree` call made against them fails harmlessly in tests.
+    pub(crate) fn attach_test_worktree(&mut self) {
+        let path = std::env::temp_dir().join(format!("herdr-test-worktree-{}", self.id));
+        self.worktree_space = Some(WorktreeSpaceMembership {
+            key: format!("test-worktree:{}", self.id),
+            label: self.display_name(),
+            repo_root: path.clone(),
+            checkout_path: path,
+            is_linked_worktree: true,
+        });
+    }
+
     pub(crate) fn test_split(&mut self, direction: Direction) -> PaneId {
         let tab = self.active_tab_mut().expect("workspace must have tab");
         let new_id = tab.layout.split_focused(direction);

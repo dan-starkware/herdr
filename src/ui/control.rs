@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::state::{FocusPane, Mode};
+use crate::app::state::{CreateFormRow, FocusPane, Mode};
 use crate::app::AppState;
 use crate::terminal::TerminalRuntimeRegistry;
 
@@ -424,7 +424,9 @@ fn render_control_half(app: &AppState, frame: &mut Frame, area: Rect) {
     }
 }
 
-/// Modal form for naming a new agent/worktree in the selected repository.
+/// Modal form for configuring a new agent/worktree in the selected repository.
+/// Rows (name, base branch, new-branch toggle, optional new-branch name) are
+/// navigated with up/down; the active row carries a `▸` marker and is editable.
 pub(super) fn render_create_agent_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     super::dim_background(frame, area);
     let p = &app.palette;
@@ -434,21 +436,21 @@ pub(super) fn render_create_agent_overlay(app: &AppState, frame: &mut Frame, are
         .map(|repo| repo.label.clone())
         .unwrap_or_else(|| "?".to_string());
 
-    let Some(inner) = super::widgets::render_modal_shell(frame, area, 56, 8, p) else {
+    let form_rows = CreateFormRow::visible(app.control.create_new_branch);
+    // title + gap + field rows + gap + footer, plus 2 for the border.
+    let popup_h = form_rows.len() as u16 + 6;
+    let Some(inner) = super::widgets::render_modal_shell(frame, area, 60, popup_h, p) else {
         return;
     };
     if inner.height < 4 {
         return;
     }
 
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .split(inner);
+    let mut constraints = vec![Constraint::Length(1), Constraint::Length(1)];
+    constraints.extend(form_rows.iter().map(|_| Constraint::Length(1)));
+    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Min(0));
+    let rows = Layout::vertical(constraints).split(inner);
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -458,39 +460,93 @@ pub(super) fn render_create_agent_overlay(app: &AppState, frame: &mut Frame, are
         rows[0],
     );
 
-    let (input_text, input_style) = if app.name_input.is_empty() {
-        (
-            "name…".to_string(),
-            Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
-        )
-    } else {
-        (app.name_input.clone(), Style::default().fg(p.text))
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(input_text, input_style))),
-        rows[1],
-    );
+    let active = app.control.create_form_row;
+    for (i, row) in form_rows.iter().enumerate() {
+        render_create_form_row(app, frame, rows[2 + i], *row, *row == active);
+    }
 
-    let marker = if app.control.create_new_branch {
-        "[x]"
-    } else {
-        "[ ]"
-    };
+    let footer = rows[rows.len() - 1];
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!("{marker} Create a new branch?"),
-            Style::default().fg(p.text),
-        ))),
-        rows[2],
-    );
-
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "enter create · space toggles new branch · esc cancel",
+            "↑↓ row · space toggles · enter create · esc cancel",
             Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
         ))),
-        rows[3],
+        footer,
     );
+}
+
+/// Render one row of the create-agent form. The active row gets a `▸` marker and
+/// its value is highlighted; empty text fields show a dim placeholder.
+fn render_create_form_row(
+    app: &AppState,
+    frame: &mut Frame,
+    area: Rect,
+    row: CreateFormRow,
+    active: bool,
+) {
+    let p = &app.palette;
+    let marker = if active { "▸ " } else { "  " };
+    let mut spans = vec![Span::styled(marker, Style::default().fg(p.accent))];
+
+    if row == CreateFormRow::NewBranchToggle {
+        let mark = if app.control.create_new_branch {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        let style = if active {
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.text)
+        };
+        spans.push(Span::styled(format!("{mark} create a new branch"), style));
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
+
+    let (label, value, placeholder) = match row {
+        CreateFormRow::Name => ("name", app.name_input.clone(), "name…".to_string()),
+        CreateFormRow::Base => (
+            "branch",
+            app.control.create_base_branch.clone().unwrap_or_default(),
+            "new branch from HEAD".to_string(),
+        ),
+        CreateFormRow::NewBranchName => {
+            let agent = app.name_input.trim();
+            let hint = if agent.is_empty() {
+                "agent name".to_string()
+            } else {
+                agent.to_string()
+            };
+            (
+                "new branch",
+                app.control.create_branch_name.clone(),
+                hint,
+            )
+        }
+        CreateFormRow::NewBranchToggle => unreachable!("handled above"),
+    };
+
+    let label_style = if active {
+        Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(p.subtext0)
+    };
+    spans.push(Span::styled(format!("{label:<11}"), label_style));
+    if value.is_empty() {
+        spans.push(Span::styled(
+            placeholder,
+            Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
+        ));
+    } else {
+        let value_style = if active {
+            Style::default().fg(p.text).bg(p.surface0)
+        } else {
+            Style::default().fg(p.text)
+        };
+        spans.push(Span::styled(value, value_style));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Confirm prompt for the create-agent flow: the chosen base branch is checked
@@ -510,18 +566,61 @@ pub(super) fn render_confirm_create_branch_overlay(app: &AppState, frame: &mut F
     if inner.height < 2 {
         return;
     }
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("Branch “{base}” is checked out in another worktree."),
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        )))
+        .wrap(ratatui::widgets::Wrap { trim: true }),
+        rows[0],
+    );
+    // The detach option is only meaningful when we know which worktree to detach.
+    let can_detach = app.control.create_conflict_worktree.is_some();
+    let hint = if can_detach {
+        "y new branch · d detach other worktree · n cancel"
+    } else {
+        "y new branch · n cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
+        )))
+        .wrap(ratatui::widgets::Wrap { trim: true }),
+        rows[2],
+    );
+}
+
+/// Confirmation modal for quitting herdr.
+pub(super) fn render_confirm_quit_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    super::dim_background(frame, area);
+    let p = &app.palette;
+
+    let Some(inner) = super::widgets::render_modal_shell(frame, area, 44, 6, p) else {
+        return;
+    };
+    if inner.height < 2 {
+        return;
+    }
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!("Branch “{base}” is checked out elsewhere. Create a new branch on top instead?"),
+            "quit herdr?",
             Style::default().fg(p.text).add_modifier(Modifier::BOLD),
         ))),
         rows[0],
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "y new branch · n cancel",
+            "y quit · n cancel",
             Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
         ))),
         rows[1],

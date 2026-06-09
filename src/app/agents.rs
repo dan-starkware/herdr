@@ -400,39 +400,80 @@ impl App {
         Ok((ws_idx, result.0, result.1.pane_id))
     }
 
-    /// Handle a key while in [`Mode::CreateAgent`] (the new-agent name form).
+    /// Handle a key while in [`Mode::CreateAgent`] (the new-agent form). The form
+    /// has several rows (name, base branch, new-branch toggle, new-branch name);
+    /// up/down move the active row and the active row is the one being edited.
+    /// The name row is active first, so typing a name and pressing enter still
+    /// works with no extra keystrokes.
     pub(super) fn handle_create_agent_key(&mut self, key: crossterm::event::KeyEvent) {
+        use crate::app::state::CreateFormRow;
         use crossterm::event::{KeyCode, KeyModifiers};
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
+        let row = self.state.control.create_form_row;
         match key.code {
             KeyCode::Esc => {
                 self.state.mode = Mode::Home;
                 self.state.name_input.clear();
+                self.state.control.reset_create_form();
             }
             KeyCode::Enter => self.submit_create_agent(),
-            KeyCode::Backspace => {
-                self.state.name_input.pop();
-            }
-            // Space toggles the "create a new branch?" checkbox rather than
-            // typing into the name — it must never reach `name_input`.
-            KeyCode::Char(' ')
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) =>
-            {
-                self.state.control.create_new_branch = !self.state.control.create_new_branch;
-            }
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) =>
-            {
-                if self.state.name_input_replace_on_type {
-                    self.state.name_input.clear();
-                    self.state.name_input_replace_on_type = false;
+            KeyCode::Up => self.state.control.move_create_form_row(-1),
+            KeyCode::Down => self.state.control.move_create_form_row(1),
+            KeyCode::Backspace => match row {
+                CreateFormRow::Name => {
+                    self.state.name_input.pop();
                 }
-                self.state.name_input.push(c);
+                CreateFormRow::Base => {
+                    if let Some(base) = self.state.control.create_base_branch.as_mut() {
+                        base.pop();
+                    }
+                }
+                CreateFormRow::NewBranchName => {
+                    self.state.control.create_branch_name.pop();
+                }
+                CreateFormRow::NewBranchToggle => {}
+            },
+            // Space flips the checkbox on the toggle row and is ignored on text
+            // rows (agent/branch names don't contain spaces), so it never lands
+            // in a name field.
+            KeyCode::Char(' ') if plain => {
+                if row == CreateFormRow::NewBranchToggle {
+                    self.state.control.create_new_branch = !self.state.control.create_new_branch;
+                }
             }
+            KeyCode::Char(c) if plain => match row {
+                CreateFormRow::Name => self.state.name_input.push(c),
+                CreateFormRow::Base => self
+                    .state
+                    .control
+                    .create_base_branch
+                    .get_or_insert_with(String::new)
+                    .push(c),
+                CreateFormRow::NewBranchName => self.state.control.create_branch_name.push(c),
+                CreateFormRow::NewBranchToggle => {}
+            },
             _ => {}
+        }
+    }
+
+    /// Pick a default agent name `<repo>-<n>` using the first integer `n` (from 1)
+    /// that is free — no existing checkout directory and no agent already using it.
+    fn default_agent_name(&self, repo: &crate::workspace::Repository) -> String {
+        let mut i = 1usize;
+        loop {
+            let candidate = format!("{}-{i}", repo.label);
+            let path = crate::worktree::default_checkout_path(
+                &self.state.worktree_directory,
+                &repo.label,
+                &candidate,
+            );
+            let name_taken = !self.agent_name_conflicts(&candidate, "").is_empty();
+            if !path.exists() && !name_taken {
+                return candidate;
+            }
+            i += 1;
         }
     }
 
@@ -443,10 +484,10 @@ impl App {
             self.state.mode = Mode::Home;
             return;
         };
-        let name = self.state.name_input.trim().to_string();
+        let mut name = self.state.name_input.trim().to_string();
         if name.is_empty() {
-            // Keep the form open until a name is provided.
-            return;
+            // No name given — default to "<repo>-<n>" with the first free integer.
+            name = self.default_agent_name(&repo);
         }
 
         // The worktree directory name comes from the agent NAME, not the branch.
@@ -456,29 +497,41 @@ impl App {
             &name,
         );
 
-        // The base branch is the one picked in the branch picker. If somehow
-        // missing, fall back to a fresh branch from HEAD (the old behavior).
-        let base = self
+        // The base branch is the (possibly edited) picker selection. A blank
+        // base falls back to a fresh branch from HEAD (the old behavior).
+        let trimmed_base = self
             .state
             .control
             .create_base_branch
-            .clone()
-            .unwrap_or_else(|| "HEAD".to_string());
-        let new_branch = self.state.control.create_new_branch
-            || self.state.control.create_base_branch.is_none();
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let base = trimmed_base.clone().unwrap_or_else(|| "HEAD".to_string());
+        let new_branch = self.state.control.create_new_branch || trimmed_base.is_none();
 
         if new_branch {
-            // The branch name is the worktree (agent) name verbatim.
+            // Branch name: the dedicated field, or the agent name when left blank.
+            let branch_name = {
+                let custom = self.state.control.create_branch_name.trim();
+                if custom.is_empty() {
+                    name.clone()
+                } else {
+                    custom.to_string()
+                }
+            };
             let command = crate::worktree::build_worktree_add_new_branch_command(
                 &repo.root,
                 &checkout_path,
-                &name,
+                &branch_name,
                 &base,
             );
             if let Err(err) = crate::worktree::run_worktree_command(&command) {
                 tracing::warn!(error = %err, "create-agent worktree add (new branch) failed");
                 self.state.set_home_toast("create agent failed", err);
                 self.state.mode = Mode::Home;
+                self.state.name_input.clear();
+                self.state.control.reset_create_form();
                 return;
             }
             // Best-effort: stack the new branch onto its base with Graphite so it
@@ -495,14 +548,18 @@ impl App {
             );
             if let Err(err) = crate::worktree::run_worktree_command(&command) {
                 if crate::worktree::is_branch_already_checked_out_error(&err) {
-                    // The branch is live in another worktree; offer to branch off
-                    // it instead rather than surfacing a raw git error.
+                    // The branch is live in another worktree; stash that worktree's
+                    // path so the prompt can offer to branch off it, or detach it.
+                    self.state.control.create_conflict_worktree =
+                        crate::worktree::worktree_path_for_branch(&repo.root, &base);
                     self.state.mode = Mode::ConfirmCreateBranch;
                     return;
                 }
                 tracing::warn!(error = %err, "create-agent worktree add (existing branch) failed");
                 self.state.set_home_toast("create agent failed", err);
                 self.state.mode = Mode::Home;
+                self.state.name_input.clear();
+                self.state.control.reset_create_form();
                 return;
             }
         }
@@ -587,30 +644,55 @@ impl App {
                 self.state.set_home_toast("create agent failed", body.message);
             }
         }
-        self.state.control.create_base_branch = None;
-        self.state.control.create_new_branch = false;
+        self.state.control.reset_create_form();
         self.state.mode = Mode::Home;
         self.state.name_input.clear();
     }
 
-    /// Handle a key while confirming whether to create a new branch because the
-    /// chosen base branch is already checked out in another worktree.
+    /// Handle a key while confirming what to do because the chosen base branch is
+    /// already checked out in another worktree. Three choices: branch off it
+    /// (`y`), detach that other worktree to free the branch (`d`), or cancel (`n`).
     pub(super) fn handle_confirm_create_branch_key(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                 // Retry the create flow on the new-branch path.
                 self.state.control.create_new_branch = true;
+                self.state.control.create_conflict_worktree = None;
                 self.submit_create_agent();
             }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                self.detach_conflicting_worktree_and_retry();
+            }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                self.state.control.create_base_branch = None;
-                self.state.control.create_new_branch = false;
+                self.state.control.reset_create_form();
                 self.state.name_input.clear();
                 self.state.mode = Mode::Home;
             }
             _ => {}
         }
+    }
+
+    /// Detach the worktree currently holding the base branch (checking it out at
+    /// the same commit in detached HEAD), then retry the existing-branch checkout
+    /// now that the branch is free. Keeps the prompt open on failure.
+    fn detach_conflicting_worktree_and_retry(&mut self) {
+        let Some(path) = self.state.control.create_conflict_worktree.clone() else {
+            // Nothing to detach; treat as cancel.
+            self.state.control.reset_create_form();
+            self.state.name_input.clear();
+            self.state.mode = Mode::Home;
+            return;
+        };
+        let command = crate::worktree::build_worktree_detach_command(&path);
+        if let Err(err) = crate::worktree::run_worktree_command(&command) {
+            tracing::warn!(error = %err, "detach conflicting worktree failed");
+            self.state.set_home_toast("detach failed", err);
+            return;
+        }
+        self.state.control.create_conflict_worktree = None;
+        // The branch is free now; retry the existing-branch checkout.
+        self.submit_create_agent();
     }
 
     /// Open a plain interactive shell in the selected repository's root and
@@ -806,6 +888,9 @@ impl App {
             .unwrap_or_else(|| branch.name.clone());
         self.state.control.create_base_branch = Some(base);
         self.state.control.create_new_branch = new_branch;
+        self.state.control.create_branch_name.clear();
+        self.state.control.create_form_row = crate::app::state::CreateFormRow::Name;
+        self.state.control.create_conflict_worktree = None;
         self.state.name_input.clear();
         self.state.name_input_replace_on_type = false;
         self.state.mode = Mode::CreateAgent;
