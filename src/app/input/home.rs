@@ -366,7 +366,9 @@ impl AppState {
             // fall through to the agent pane.
             KeyCode::Up if in_list => self.home_move_selection(-1),
             KeyCode::Down if in_list => self.home_move_selection(1),
-            KeyCode::Enter if in_list => self.home_activate(),
+            // Space mirrors Enter in the list panes: open the branch picker in
+            // the repos (Control) list, or jump into the selected agent.
+            KeyCode::Enter | KeyCode::Char(' ') if in_list => self.home_activate(),
 
             // Vim-style navigation in the list panes: hjkl mirror the arrow keys.
             // The lists are vertical, so h/l are inert just like Left/Right.
@@ -962,6 +964,58 @@ mod tests {
             Some("main")
         );
         assert!(app.state.control.create_new_branch);
+    }
+
+    #[test]
+    fn picker_space_opens_name_form_like_enter() {
+        let mut app = app_with_picker(1);
+        app.handle_review_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::empty()));
+        assert_eq!(app.state.mode, Mode::CreateAgent);
+        assert_eq!(
+            app.state.control.create_base_branch.as_deref(),
+            Some("feat")
+        );
+        assert!(!app.state.control.create_new_branch);
+    }
+
+    #[test]
+    fn repo_space_opens_branch_picker() {
+        let mut state = AppState::test_new();
+        state.control.repos = vec![crate::workspace::Repository {
+            key: "a".into(),
+            root: "/a".into(),
+            label: "a".into(),
+        }];
+        assert_eq!(state.control.focus, FocusPane::Control);
+        // Space mirrors Enter in the repos list: it opens the branch picker.
+        assert!(state.apply_home_key(plain(KeyCode::Char(' '))));
+        assert_eq!(state.mode, Mode::Review);
+        assert!(state.control.review.is_some());
+    }
+
+    #[test]
+    fn review_picker_owns_only_its_own_keys() {
+        let mut app = app_with_picker(0);
+        let ev = |code, mods| KeyEvent::new(code, mods);
+        // Focused on the Control half: plain picker keys belong to the picker...
+        assert!(app
+            .state
+            .review_picker_owns_key(ev(KeyCode::Char('c'), KeyModifiers::empty())));
+        assert!(app
+            .state
+            .review_picker_owns_key(ev(KeyCode::Char('j'), KeyModifiers::empty())));
+        // ...but the focus-nav chord alt+h/j/k/l flows to the home handler so the
+        // picker can yield focus to Main/Agents without closing.
+        for c in ['h', 'j', 'k', 'l'] {
+            assert!(!app
+                .state
+                .review_picker_owns_key(ev(KeyCode::Char(c), KeyModifiers::ALT)));
+        }
+        // With another pane focused, no key is the picker's.
+        app.state.control.focus = FocusPane::Main;
+        assert!(!app
+            .state
+            .review_picker_owns_key(ev(KeyCode::Char('c'), KeyModifiers::empty())));
     }
 
     #[test]

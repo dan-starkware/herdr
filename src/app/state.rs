@@ -1481,6 +1481,22 @@ impl AppState {
         self.mode.is_home_surface() && self.control.focus == FocusPane::Main
     }
 
+    /// While the branch picker ([`Mode::Review`]) is open, decide whether a key
+    /// is the picker's own. The picker lives in the Control half, so it owns keys
+    /// only while that half is focused — and never the focus-navigation chord
+    /// alt+h/j/k/l, which moves pane focus (possibly to Main/Agents) so you can
+    /// step away to read the diff and back without closing the picker. Anything
+    /// the picker doesn't own flows through the home key handler instead.
+    pub(crate) fn review_picker_owns_key(&self, key: crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        if self.control.focus != FocusPane::Control {
+            return false;
+        }
+        let is_focus_nav = key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Char('h' | 'j' | 'k' | 'l'));
+        !is_focus_nav
+    }
+
     pub(crate) fn focused_pane_requests_mouse_capture_from(
         &self,
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,

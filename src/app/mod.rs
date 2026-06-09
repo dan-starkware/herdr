@@ -1361,7 +1361,13 @@ impl App {
             Mode::ConfirmKill => self.state.handle_confirm_kill_key(key_event),
             Mode::ConfirmQuit => self.state.handle_confirm_quit_key(key_event),
             Mode::ConfirmCreateBranch => self.handle_confirm_create_branch_key(key_event),
-            Mode::Review => self.handle_review_key(key_event),
+            Mode::Review if self.state.review_picker_owns_key(key_event) => {
+                self.handle_review_key(key_event)
+            }
+            // Focus-nav (alt+hjkl) and any key with another pane focused flow
+            // through the home handler, so the picker can yield focus to Main/
+            // Agents and reclaim it without closing.
+            Mode::Review => self.handle_home_key_headless(key),
             Mode::KeybindHelp => input::handle_keybind_help_key(&mut self.state, key_event),
             Mode::Onboarding => self.handle_onboarding_key(key_event),
             Mode::ReleaseNotes => self.handle_release_notes_key(key_event),

@@ -863,9 +863,9 @@ impl App {
             // Plain `c` checks the selected branch out into the Main pane's
             // worktree, when Main is a worktree of the repo being browsed.
             KeyCode::Char('c') if plain => self.checkout_selected_branch_into_main(),
-            // Enter picks the base branch and moves to the name form. alt+Enter
-            // does the same but pre-checks "create a new branch".
-            KeyCode::Enter => {
+            // Enter (or Space) picks the base branch and moves to the name form;
+            // the alt modifier additionally pre-checks "create a new branch".
+            KeyCode::Enter | KeyCode::Char(' ') => {
                 let new_branch = key.modifiers.contains(KeyModifiers::ALT);
                 self.pick_branch_for_create(new_branch);
             }
@@ -903,9 +903,9 @@ impl App {
     /// pane's worktree, in place, and refresh the review row to the new branch.
     ///
     /// Only acts when the active (Main) workspace is a worktree of the same repo
-    /// whose branches are being browsed; otherwise it leaves the picker open and
-    /// explains why via a toast. On success it closes the picker so the updated
-    /// Main pane and review are visible.
+    /// whose branches are being browsed; otherwise it explains why via a toast.
+    /// The picker stays open on the same repo either way, so you can keep
+    /// checking branches out; on success it refreshes the branch list.
     fn checkout_selected_branch_into_main(&mut self) {
         let Some(review) = self.state.control.review.as_ref() else {
             return;
@@ -963,9 +963,15 @@ impl App {
         self.respawn_review_row_after_checkout(ws_idx);
         self.state.mark_session_dirty();
         self.state.set_home_toast("checked out", branch_name);
-        // The action is done; leave the picker for the home surface.
-        self.state.mode = Mode::Home;
-        self.state.control.review = None;
+        // Stay in the picker on the same repo so you can keep checking branches
+        // out; refresh the branch list (and clamp the selection) so the
+        // current-branch marker reflects the checkout just performed.
+        if let Some(review) = self.state.control.review.as_mut() {
+            review.branches = crate::workspace::list_review_branches(&review.repo.root);
+            if review.selected >= review.branches.len() {
+                review.selected = review.branches.len().saturating_sub(1);
+            }
+        }
     }
 
     /// If the active workspace's REVIEW row is open, replace it with a freshly

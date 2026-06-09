@@ -176,7 +176,7 @@ fn render_review_half(app: &AppState, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            " enter open · c checkout · alt+p pr · esc back",
+            " space open · c checkout · alt+p pr · esc back",
             Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
         ))),
         Rect::new(area.x, footer_y, area.width, 1),
@@ -416,7 +416,7 @@ fn render_control_half(app: &AppState, frame: &mut Frame, area: Rect) {
         let hint_y = area.y + area.height.saturating_sub(1);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                " enter new · t term",
+                " space new · t term",
                 Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
             ))),
             Rect::new(area.x, hint_y, area.width, 1),
