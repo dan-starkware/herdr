@@ -191,6 +191,21 @@ pub(crate) fn build_worktree_detach_command(worktree_path: &Path) -> WorktreeCom
     }
 }
 
+/// `git -C <worktree_path> checkout <branch>` — switch an already-existing
+/// worktree to an existing branch in place (no `worktree add`). Used by the
+/// branch picker's `c` action to retarget the Main pane's worktree.
+pub(crate) fn build_checkout_branch_command(worktree_path: &Path, branch: &str) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            worktree_path.display().to_string(),
+            "checkout".to_string(),
+            branch.to_string(),
+        ],
+    }
+}
+
 /// Find the path of the worktree that currently has `branch` checked out, if any.
 pub(crate) fn worktree_path_for_branch(repo_root: &Path, branch: &str) -> Option<PathBuf> {
     list_existing_worktrees(repo_root)
@@ -452,6 +467,16 @@ prunable stale
         assert_eq!(
             command.args,
             vec!["-C", "/w/herdr/issue-137", "checkout", "--detach"]
+        );
+    }
+
+    #[test]
+    fn checkout_branch_command_switches_the_worktree_in_place() {
+        let command = build_checkout_branch_command(Path::new("/w/herdr/issue-137"), "feature/x");
+        assert_eq!(command.program, "git");
+        assert_eq!(
+            command.args,
+            vec!["-C", "/w/herdr/issue-137", "checkout", "feature/x"]
         );
     }
 

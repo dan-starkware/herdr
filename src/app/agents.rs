@@ -860,6 +860,9 @@ impl App {
             KeyCode::Char('h') | KeyCode::Char('l') if plain => {}
             // The picker is not a text input, so plain `p` (or alt+p) submits a PR.
             KeyCode::Char('p') => self.submit_pr_for_review(),
+            // Plain `c` checks the selected branch out into the Main pane's
+            // worktree, when Main is a worktree of the repo being browsed.
+            KeyCode::Char('c') if plain => self.checkout_selected_branch_into_main(),
             // Enter picks the base branch and moves to the name form. alt+Enter
             // does the same but pre-checks "create a new branch".
             KeyCode::Enter => {
@@ -894,6 +897,114 @@ impl App {
         self.state.name_input.clear();
         self.state.name_input_replace_on_type = false;
         self.state.mode = Mode::CreateAgent;
+    }
+
+    /// `c` in the branch picker: check the selected branch out into the Main
+    /// pane's worktree, in place, and refresh the review row to the new branch.
+    ///
+    /// Only acts when the active (Main) workspace is a worktree of the same repo
+    /// whose branches are being browsed; otherwise it leaves the picker open and
+    /// explains why via a toast. On success it closes the picker so the updated
+    /// Main pane and review are visible.
+    fn checkout_selected_branch_into_main(&mut self) {
+        let Some(review) = self.state.control.review.as_ref() else {
+            return;
+        };
+        let Some(branch) = review.branches.get(review.selected) else {
+            return;
+        };
+        // The checkout target must be a local branch name; strip a remote prefix
+        // (matching `pick_branch_for_create`).
+        let branch_name = branch
+            .name
+            .rsplit_once('/')
+            .filter(|_| branch.is_remote)
+            .map(|(_, name)| name.to_string())
+            .unwrap_or_else(|| branch.name.clone());
+        let picker_repo_root = review.repo.root.clone();
+
+        let Some(ws_idx) = self.state.active else {
+            self.state
+                .set_home_toast("checkout skipped", "no active workspace in the Main pane");
+            return;
+        };
+        let Some(space) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.worktree_space().cloned())
+        else {
+            self.state
+                .set_home_toast("checkout skipped", "the Main pane is not a repo worktree");
+            return;
+        };
+        if crate::worktree::canonical_or_original(&space.repo_root)
+            != crate::worktree::canonical_or_original(&picker_repo_root)
+        {
+            self.state.set_home_toast(
+                "checkout skipped",
+                "the Main pane is a different repo than the one selected",
+            );
+            return;
+        }
+
+        let command =
+            crate::worktree::build_checkout_branch_command(&space.checkout_path, &branch_name);
+        if let Err(err) = crate::worktree::run_worktree_command(&command) {
+            self.state.set_home_toast("checkout failed", err);
+            return;
+        }
+
+        // Reflect the new branch immediately so the review row respawns against
+        // it; the periodic git poll keeps `cached_git_branch` accurate after.
+        if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
+            ws.cached_git_branch = Some(branch_name.clone());
+        }
+        self.respawn_review_row_after_checkout(ws_idx);
+        self.state.mark_session_dirty();
+        self.state.set_home_toast("checked out", branch_name);
+        // The action is done; leave the picker for the home surface.
+        self.state.mode = Mode::Home;
+        self.state.control.review = None;
+    }
+
+    /// If the active workspace's REVIEW row is open, replace it with a freshly
+    /// spawned one so it reflects the now-current branch. The old review pane's
+    /// `vimrev` is bound to the previous branch's base, so reattaching it would
+    /// show a stale diff — kill it and let [`Self::toggle_review_row`] spawn a
+    /// fresh row (which reads the updated `cached_git_branch`).
+    fn respawn_review_row_after_checkout(&mut self, ws_idx: usize) {
+        use crate::pane::PaneRole;
+        let review_pane = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_with_role(PaneRole::Review));
+        let Some(review_pane) = review_pane else {
+            return; // review row not open; nothing to refresh
+        };
+        let terminal_id = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.terminal_id(review_pane).cloned());
+        if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
+            ws.remove_pane(review_pane);
+            // Drop the stash so `toggle_review_row` spawns fresh instead of
+            // reattaching the now-killed terminal.
+            ws.detached_review = None;
+            // Keep focus off the gone pane.
+            if let Some(agent) = ws.agent_pane() {
+                if let Some(tab_idx) = ws.find_tab_index_for_pane(agent) {
+                    ws.tabs[tab_idx].layout.focus_pane(agent);
+                    ws.tabs[tab_idx].layout.equalize_vertical();
+                }
+            }
+        }
+        if let Some(terminal_id) = terminal_id {
+            self.state.remove_unattached_terminal_ids([terminal_id]);
+        }
+        self.toggle_review_row();
     }
 
     /// Submit a PR for the branch selected in the review picker.

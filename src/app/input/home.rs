@@ -965,6 +965,21 @@ mod tests {
     }
 
     #[test]
+    fn picker_c_without_main_workspace_is_a_safe_skip() {
+        let mut app = app_with_picker(1);
+        // No active workspace, so `c` has no Main pane to retarget: it must not
+        // panic, must keep the picker open, and should explain via a toast.
+        assert!(app.state.active.is_none());
+        app.handle_review_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::empty()));
+        assert_eq!(app.state.mode, Mode::Review);
+        assert!(app.state.control.review.is_some());
+        assert_eq!(
+            app.state.toast.as_ref().expect("toast set").title,
+            "checkout skipped"
+        );
+    }
+
+    #[test]
     fn space_toggles_new_branch_on_toggle_row_only() {
         use crate::app::state::CreateFormRow;
         let mut app = app_for_mouse_test();
