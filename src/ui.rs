@@ -296,7 +296,37 @@ fn render_notifications(app: &AppState, frame: &mut Frame, terminal_area: Rect) 
     }
     let mut copy_feedback_offset = u16::from(has_config_diagnostic);
     let mut toast_rect = None;
-    if let Some(toast) = &app.toast {
+    if let Some(fetch) = &app.control.review_base_fetch {
+        // A review-base fetch is in flight: a loading box takes the toast slot
+        // (suppressing any toast underneath) and disappears exactly when the
+        // fetch lands and the review row opens.
+        let loading = crate::app::state::ToastNotification {
+            kind: crate::app::state::ToastKind::Finished,
+            title: format!(
+                "{} fetching origin/{}",
+                spinner_frame(app.spinner_tick),
+                fetch.base_branch
+            ),
+            context: format!("review for PR #{} opens when done", fetch.pr_number),
+            position: None,
+            target: None,
+        };
+        let position = app.toast_config.herdr.position;
+        render_toast_notification(
+            frame,
+            frame.area(),
+            &loading,
+            has_config_diagnostic,
+            position,
+            &app.palette,
+        );
+        toast_rect = Some(toast_notification_rect(
+            frame.area(),
+            &loading,
+            has_config_diagnostic,
+            position,
+        ));
+    } else if let Some(toast) = &app.toast {
         render_toast_notification(
             frame,
             frame.area(),

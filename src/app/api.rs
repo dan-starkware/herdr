@@ -66,6 +66,11 @@ impl App {
             return;
         }
 
+        if let AppEvent::ReviewBaseFetchFinished(result) = ev {
+            self.handle_review_base_fetch_finished(result);
+            return;
+        }
+
         if let AppEvent::PaneFocusSignal { pane_id, direction } = ev {
             if self.apply_pane_focus_signal(pane_id, direction) {
                 self.render_dirty.store(true, Ordering::Release);

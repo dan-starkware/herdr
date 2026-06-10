@@ -22,6 +22,12 @@ pub struct WorktreeRemoveResult {
     pub result: Result<(), String>,
 }
 
+#[derive(Debug)]
+pub struct ReviewBaseFetchResult {
+    pub workspace_id: String,
+    pub result: Result<(), String>,
+}
+
 /// Direction a pane asked herdr to move focus, signalled by the program inside
 /// it (e.g. vim emitting our focus OSC when it has no window left to move to).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,4 +128,6 @@ pub enum AppEvent {
     WorktreeAddFinished(WorktreeAddResult),
     /// Background `git worktree remove` completed.
     WorktreeRemoveFinished(WorktreeRemoveResult),
+    /// Background `git fetch origin <base>` ahead of a PR review row completed.
+    ReviewBaseFetchFinished(ReviewBaseFetchResult),
 }

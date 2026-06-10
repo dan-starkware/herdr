@@ -1526,7 +1526,38 @@ impl App {
             }
         }
 
-        // First open: build argv + cwd and spawn a fresh row.
+        // First open: while reviewing someone else's PR, freshen the diff
+        // target `origin/<base>` in the background first — the row then spawns
+        // from the fetch handler. (Re-attaches above keep their already-
+        // rendered diff, so they don't fetch.)
+        if role == PaneRole::Review && self.start_review_base_fetch(ws_idx) {
+            return;
+        }
+        self.spawn_fresh_row(ws_idx, role);
+    }
+
+    /// Spawn a fresh review/terminal row in workspace `ws_idx`. Recomputes the
+    /// split target itself so it can run deferred — from the review-base fetch
+    /// handler — as well as straight from [`Self::toggle_row`].
+    fn spawn_fresh_row(&mut self, ws_idx: usize, role: crate::pane::PaneRole) {
+        use crate::pane::PaneRole;
+        let target = {
+            let Some(ws) = self.state.workspaces.get(ws_idx) else {
+                return;
+            };
+            match role {
+                PaneRole::Terminal => ws.agent_pane(),
+                PaneRole::Review => ws
+                    .pane_with_role(PaneRole::Terminal)
+                    .or_else(|| ws.agent_pane()),
+                PaneRole::Agent => None,
+            }
+        };
+        let Some(target) = target else {
+            return;
+        };
+
+        // Build argv + cwd and spawn the row.
         let (argv, cwd) = match self.row_spawn_spec(ws_idx, role) {
             Some(spec) => spec,
             None => return,
@@ -1576,6 +1607,114 @@ impl App {
             ws.tabs[tab_idx].layout.equalize_vertical();
         }
         self.state.mark_session_dirty();
+    }
+
+    /// While workspace `ws_idx` is reviewing someone else's PR, start a
+    /// background `git fetch origin <base>` so the review row's
+    /// `origin/<base>` diff target reflects the base as GitHub sees it (the
+    /// remote-tracking ref is only as fresh as the last fetch). Returns true
+    /// when the caller must NOT spawn the review row yet —
+    /// [`Self::handle_review_base_fetch_finished`] spawns it when the fetch
+    /// lands. A loading box renders in the toast slot meanwhile.
+    fn start_review_base_fetch(&mut self, ws_idx: usize) -> bool {
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return false;
+        };
+        let Some(pr) = ws.reviewing_pr_active() else {
+            return false; // not a PR review: spawn against the local base as usual
+        };
+        if let Some(fetch) = &self.state.control.review_base_fetch {
+            // One fetch at a time. Same workspace: its handler will spawn the
+            // row, nothing more to do. Another workspace's fetch holds the
+            // slot: fall through to an unfetched spawn rather than dropping
+            // the row on the floor.
+            return fetch.workspace_id == ws.id;
+        }
+        let workspace_id = ws.id.clone();
+        let base_branch = pr.base_branch.clone();
+        let repo_root = ws
+            .worktree_space()
+            .map(|space| space.repo_root.clone())
+            .unwrap_or_else(|| ws.identity_cwd.clone());
+        self.state.control.review_base_fetch =
+            Some(crate::app::state::ReviewBaseFetchState {
+                workspace_id: workspace_id.clone(),
+                pr_number: pr.number,
+                base_branch: base_branch.clone(),
+            });
+        tracing::info!(pr = pr.number, base = %base_branch, "starting review-base fetch");
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = match std::process::Command::new("git")
+                .current_dir(&repo_root)
+                .args(["fetch", "origin", &base_branch])
+                .output()
+            {
+                Ok(out) if out.status.success() => Ok(()),
+                Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+                Err(err) => Err(format!("git not available: {err}")),
+            };
+            let _ = event_tx.blocking_send(crate::events::AppEvent::ReviewBaseFetchFinished(
+                crate::events::ReviewBaseFetchResult {
+                    workspace_id,
+                    result,
+                },
+            ));
+        });
+        true
+    }
+
+    /// Background review-base fetch completed: clear the loading state and
+    /// spawn the review row that was waiting on it. A failed fetch still opens
+    /// the row — a possibly-stale `origin/<base>` beats no review — but says
+    /// so in a toast.
+    pub(crate) fn handle_review_base_fetch_finished(
+        &mut self,
+        result: crate::events::ReviewBaseFetchResult,
+    ) {
+        let matches = self
+            .state
+            .control
+            .review_base_fetch
+            .as_ref()
+            .is_some_and(|fetch| fetch.workspace_id == result.workspace_id);
+        if !matches {
+            return; // stale result; some newer fetch owns the slot
+        }
+        let fetch = self
+            .state
+            .control
+            .review_base_fetch
+            .take()
+            .expect("checked above");
+        if let Err(err) = result.result {
+            tracing::warn!(base = %fetch.base_branch, error = %err, "review-base fetch failed");
+            self.state.set_home_toast(
+                "fetch failed",
+                format!("origin/{} may be stale: {err}", fetch.base_branch),
+            );
+        }
+        let ws_idx = self
+            .state
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == result.workspace_id);
+        if let Some(ws_idx) = ws_idx {
+            // Skip when a review row appeared meanwhile (e.g. re-attached);
+            // spawning another would stack a duplicate row.
+            let already_open = self
+                .state
+                .workspaces
+                .get(ws_idx)
+                .and_then(|ws| ws.pane_with_role(crate::pane::PaneRole::Review))
+                .is_some();
+            if !already_open {
+                self.spawn_fresh_row(ws_idx, crate::pane::PaneRole::Review);
+            }
+        }
+        self.render_dirty
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.render_notify.notify_one();
     }
 
     /// Whether the active workspace's REVIEW row is the currently focused pane.
@@ -1937,6 +2076,104 @@ mod claude_fix_tests {
         let row = "❯ ls -la";
         let col = row.chars().count() as u16;
         assert!(prompt_has_typed_text(row, col));
+    }
+}
+
+#[cfg(test)]
+mod review_base_fetch_tests {
+    use super::App;
+
+    fn app() -> App {
+        App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            tokio::sync::mpsc::unbounded_channel().1,
+            crate::api::EventHub::default(),
+        )
+    }
+
+    fn pr() -> crate::workspace::ReviewPr {
+        crate::workspace::ReviewPr {
+            number: 412,
+            title: "Fix parser".to_string(),
+            author: "alice".to_string(),
+            head_branch: "alice/fix-parser".to_string(),
+            base_branch: "master".to_string(),
+            url: "https://github.com/acme/proj/pull/412".to_string(),
+            graph_prefix: String::new(),
+        }
+    }
+
+    #[test]
+    fn toggling_the_review_row_defers_the_spawn_to_the_base_fetch() {
+        let mut app = app();
+        let mut ws = crate::workspace::Workspace::test_new("main");
+        // Point the fetch at a directory that is not a git repo so the
+        // background `git fetch` fails fast instead of touching the network.
+        ws.identity_cwd = std::env::temp_dir();
+        ws.cached_git_branch = Some(pr().head_branch);
+        ws.reviewing_pr = Some(pr());
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+
+        app.toggle_review_row();
+
+        let fetch = app
+            .state
+            .control
+            .review_base_fetch
+            .as_ref()
+            .expect("fetch must be in flight");
+        assert_eq!(fetch.pr_number, 412);
+        assert_eq!(fetch.base_branch, "master");
+        // The row spawn waits for the fetch handler.
+        assert!(app.state.workspaces[0]
+            .pane_with_role(crate::pane::PaneRole::Review)
+            .is_none());
+
+        // A second toggle while the fetch is in flight must not spawn either.
+        app.toggle_review_row();
+        assert!(app.state.workspaces[0]
+            .pane_with_role(crate::pane::PaneRole::Review)
+            .is_none());
+    }
+
+    #[test]
+    fn failed_fetch_clears_the_loading_state_and_toasts() {
+        let mut app = app();
+        app.state.control.review_base_fetch =
+            Some(crate::app::state::ReviewBaseFetchState {
+                workspace_id: "gone".into(),
+                pr_number: 7,
+                base_branch: "main".into(),
+            });
+        app.handle_review_base_fetch_finished(crate::events::ReviewBaseFetchResult {
+            workspace_id: "gone".into(),
+            result: Err("no network".into()),
+        });
+        assert!(app.state.control.review_base_fetch.is_none());
+        let toast = app.state.toast.expect("failure must surface in a toast");
+        assert_eq!(toast.title, "fetch failed");
+        assert!(toast.context.contains("origin/main"));
+    }
+
+    #[test]
+    fn fetch_result_for_another_workspace_is_ignored() {
+        let mut app = app();
+        app.state.control.review_base_fetch =
+            Some(crate::app::state::ReviewBaseFetchState {
+                workspace_id: "current".into(),
+                pr_number: 7,
+                base_branch: "main".into(),
+            });
+        app.handle_review_base_fetch_finished(crate::events::ReviewBaseFetchResult {
+            workspace_id: "stale".into(),
+            result: Ok(()),
+        });
+        // The in-flight fetch still owns the slot; nothing toasted.
+        assert!(app.state.control.review_base_fetch.is_some());
+        assert!(app.state.toast.is_none());
     }
 }
 

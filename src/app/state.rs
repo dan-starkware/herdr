@@ -938,6 +938,22 @@ pub struct ControlState {
     /// check the branch into the Main pane, set while in
     /// [`Mode::ConfirmCheckoutDetach`].
     pub checkout_conflict: Option<CheckoutConflict>,
+    /// In-flight `git fetch origin <base>` freshening a PR review's base
+    /// before its review row spawns. Rendered as a loading box in the toast
+    /// slot; the fetch-finished handler clears it and opens the row.
+    pub review_base_fetch: Option<ReviewBaseFetchState>,
+}
+
+/// A background fetch of a PR's base branch from origin, keeping the review
+/// row's `origin/<base>` diff target current. One runs at a time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewBaseFetchState {
+    /// Id of the workspace whose review row is waiting on the fetch.
+    pub workspace_id: String,
+    /// PR under review, for the loading message.
+    pub pr_number: u64,
+    /// The PR's base branch being fetched.
+    pub base_branch: String,
 }
 
 /// A branch the picker wants to check into the Main pane that is currently held
