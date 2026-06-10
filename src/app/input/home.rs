@@ -912,6 +912,7 @@ mod tests {
             head_branch: "bob/feature".into(),
             base_branch: "main".into(),
             url: "https://github.com/acme/proj/pull/7".into(),
+            graph_prefix: String::new(),
         }]);
         let key = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
 

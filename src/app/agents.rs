@@ -875,17 +875,18 @@ impl App {
             // Main pane's worktree, when Main is a worktree of the repo browsed.
             KeyCode::Char('c') if plain => {
                 if prs_shown {
-                    self.checkout_selected_pr_into_main(false);
+                    self.checkout_selected_pr_into_main();
                 } else {
                     self.checkout_selected_branch_into_main();
                 }
             }
             // Enter (or Space): on the branch list, pick the base branch and
             // move to the name form (alt pre-checks "create a new branch"); on
-            // the PR list, open the PR for review in the Main pane.
+            // the PR list, open the PR for review in its own workspace. Neither
+            // depends on what the Main pane currently holds — only `c` does.
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if prs_shown {
-                    self.checkout_selected_pr_into_main(true);
+                    self.open_selected_pr_for_review();
                 } else {
                     let new_branch = key.modifiers.contains(KeyModifiers::ALT);
                     self.pick_branch_for_create(new_branch);
@@ -1091,15 +1092,13 @@ impl App {
         self.checkout_selected_branch_into_main();
     }
 
-    /// Check the PR selected in the review-requests list out into the Main
+    /// `c` on the review-requests list: check the selected PR out into the Main
     /// pane's worktree (via `gh pr checkout`, which also handles fork PRs) and
     /// tag the workspace with the PR so the review row diffs against the PR
-    /// base and `alt+g` switches to drafting review replies.
-    ///
-    /// With `open_review`, additionally opens the review row (when not already
-    /// open) and leaves the picker for the Main pane — the "space opens the PR"
-    /// path. Without it (`c`), the picker stays open like the branch checkout.
-    fn checkout_selected_pr_into_main(&mut self, open_review: bool) {
+    /// base and `alt+g` switches to drafting review replies. This is the one
+    /// PR-list action that requires the Main pane to be a worktree of the
+    /// picker's repo; the picker stays open, like the branch-list checkout.
+    fn checkout_selected_pr_into_main(&mut self) {
         let Some(pr) = self
             .state
             .control
@@ -1175,24 +1174,130 @@ impl App {
         self.state
             .set_home_toast("reviewing", format!("PR #{} · {}", pr.number, pr.head_branch));
 
-        if open_review {
-            let review_open = self
-                .state
-                .workspaces
-                .get(ws_idx)
-                .and_then(|ws| ws.pane_with_role(crate::pane::PaneRole::Review))
-                .is_some();
-            if !review_open {
-                self.toggle_review_row();
-            }
-            self.state.mode = Mode::Home;
-            self.state.control.review = None;
-            self.state.control.focus = crate::app::state::FocusPane::Main;
-        } else if let Some(review) = self.state.control.review.as_mut() {
-            // Keep the picker's branch list (shown when toggling back) in sync
-            // with the checkout just performed.
+        // Keep the picker's branch list (shown when toggling back) in sync
+        // with the checkout just performed.
+        if let Some(review) = self.state.control.review.as_mut() {
             review.branches = crate::workspace::list_review_branches(&review.repo.root);
         }
+    }
+
+    /// Space/Enter on the review-requests list: open the selected PR for
+    /// review, independent of what the Main pane holds (mirroring the branch
+    /// list, where space opens the create-agent form; only `c` targets Main).
+    ///
+    /// Reuses a workspace already checked out on the PR's head branch when one
+    /// exists; otherwise creates a fresh worktree (detached `worktree add`,
+    /// then `gh pr checkout`, which fetches the head and works for fork PRs)
+    /// and spawns an agent workspace in it via the create-agent machinery.
+    /// Either way the workspace is tagged with the PR — making the review row
+    /// diff against the PR base and `alt+g` draft replies — and the review row
+    /// is opened.
+    fn open_selected_pr_for_review(&mut self) {
+        let Some(pr) = self
+            .state
+            .control
+            .review
+            .as_ref()
+            .and_then(|review| review.selected_pr())
+            .cloned()
+        else {
+            return;
+        };
+        let Some(repo) = self
+            .state
+            .control
+            .review
+            .as_ref()
+            .map(|review| review.repo.clone())
+        else {
+            return;
+        };
+
+        // Reuse a workspace already on this PR's branch.
+        let repo_key = crate::worktree::canonical_or_original(&repo.root);
+        let existing = self.state.workspaces.iter().position(|ws| {
+            ws.worktree_space().is_some_and(|space| {
+                crate::worktree::canonical_or_original(&space.repo_root) == repo_key
+            }) && ws.branch().as_deref() == Some(pr.head_branch.as_str())
+        });
+        if let Some(ws_idx) = existing {
+            self.state.switch_workspace(ws_idx);
+            self.finish_open_pr_review(ws_idx, pr);
+            return;
+        }
+
+        // Fresh worktree: add it detached, then let `gh pr checkout` fetch the
+        // PR head and switch to it in place.
+        let name = format!("pr-{}", pr.number);
+        let checkout_path = crate::worktree::default_checkout_path(
+            &self.state.worktree_directory,
+            &repo.label,
+            &name,
+        );
+        let add =
+            crate::worktree::build_worktree_add_detached_command(&repo.root, &checkout_path);
+        if let Err(err) = crate::worktree::run_worktree_command(&add) {
+            self.state.set_home_toast("open PR failed", err);
+            return;
+        }
+        let checkout_err = match std::process::Command::new("gh")
+            .current_dir(&checkout_path)
+            .args(["pr", "checkout", &pr.number.to_string()])
+            .output()
+        {
+            Ok(out) if out.status.success() => None,
+            Ok(out) => Some(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+            Err(err) => Some(format!("gh not available: {err}")),
+        };
+        if let Some(err) = checkout_err {
+            tracing::warn!(error = %err, "gh pr checkout into fresh worktree failed");
+            // Don't leave the dangling detached worktree behind.
+            let remove =
+                crate::worktree::build_worktree_remove_command(&repo.root, &checkout_path, true);
+            let _ = crate::worktree::run_worktree_command(&remove);
+            self.state.set_home_toast("open PR failed", err);
+            return;
+        }
+
+        self.finish_create_agent(&repo, &checkout_path, name);
+        // finish_create_agent toasts on spawn failure; in that case there is no
+        // new workspace to tag, so put the picker back up and stop.
+        let Some(ws_idx) = self.state.workspaces.iter().position(|ws| {
+            ws.worktree_space()
+                .is_some_and(|space| space.checkout_path == checkout_path)
+        }) else {
+            self.state.mode = Mode::Review;
+            return;
+        };
+        self.finish_open_pr_review(ws_idx, pr);
+    }
+
+    /// Shared tail of opening a PR for review in workspace `ws_idx` (which is
+    /// already active): tag it with the PR, open the review row against the PR
+    /// base (respawning a stale one), and leave the picker for the Main pane.
+    fn finish_open_pr_review(&mut self, ws_idx: usize, pr: crate::workspace::ReviewPr) {
+        let toast = format!("PR #{} · {}", pr.number, pr.head_branch);
+        if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
+            ws.cached_git_branch = Some(pr.head_branch.clone());
+            ws.reviewing_pr = Some(pr);
+        }
+        let review_open = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_with_role(crate::pane::PaneRole::Review))
+            .is_some();
+        if review_open {
+            // Retarget an already-open review row at the PR's base.
+            self.respawn_review_row_after_checkout(ws_idx);
+        } else {
+            self.toggle_review_row();
+        }
+        self.state.mark_session_dirty();
+        self.state.mode = Mode::Home;
+        self.state.control.review = None;
+        self.state.control.focus = crate::app::state::FocusPane::Main;
+        self.state.set_home_toast("reviewing", toast);
     }
 
     /// If the active workspace's REVIEW row is open, replace it with a freshly
@@ -1777,6 +1882,7 @@ mod claude_fix_tests {
             head_branch: "alice/fix-parser".to_string(),
             base_branch: "master".to_string(),
             url: "https://github.com/acme/proj/pull/412".to_string(),
+            graph_prefix: String::new(),
         };
         let p = claude_reply_prompt("origin/master", &pr);
         // Targets the PR, diffs the same base as the review row.

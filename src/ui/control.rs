@@ -266,10 +266,22 @@ fn render_review_pr_rows(
         } else {
             Style::default().fg(p.subtext0)
         };
+        // The marker column carries the stack art (`◯ ` on stack tops, `│ `
+        // below them, blank for standalone PRs). The PR checked out in the
+        // Main pane is promoted to a filled accent node, like the branch list.
         let (marker, marker_color) = if is_main_pane {
-            ("◉ ", p.accent)
+            (
+                if pr.graph_prefix.contains('◯') {
+                    pr.graph_prefix.replacen('◯', "◉", 1)
+                } else {
+                    "◉ ".to_string()
+                },
+                p.accent,
+            )
+        } else if pr.graph_prefix.is_empty() {
+            ("  ".to_string(), p.overlay0)
         } else {
-            ("  ", p.green)
+            (pr.graph_prefix.clone(), p.overlay0)
         };
         let number = format!("#{} ", pr.number);
         let author = format!(" · {}", pr.author);

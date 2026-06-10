@@ -156,6 +156,26 @@ pub(crate) fn build_worktree_add_new_branch_command(
     }
 }
 
+/// `git -C <repo_root> worktree add --detach <path>` — a new linked worktree on
+/// detached HEAD, for when the wanted branch doesn't exist locally yet (e.g. a
+/// PR head that `gh pr checkout` then fetches and switches to in place).
+pub(crate) fn build_worktree_add_detached_command(
+    repo_root: &Path,
+    path: &Path,
+) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            repo_root.display().to_string(),
+            "worktree".to_string(),
+            "add".to_string(),
+            "--detach".to_string(),
+            path.display().to_string(),
+        ],
+    }
+}
+
 /// `git -C <repo_root> worktree add <path> <branch>` — check out an existing
 /// branch into a new linked worktree (no `-b`, so the branch must already exist).
 pub(crate) fn build_worktree_add_existing_branch_command(
