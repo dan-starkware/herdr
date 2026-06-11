@@ -20,7 +20,7 @@ pub use self::{
     model::{
         validated_sidebar_bounds, AgentPanelScopeConfig, Config, ConfigReloadReport,
         ConfigReloadStatus, KeysConfig, NewTerminalCwdConfig, ShellModeConfig,
-        ToastClipboardPosition, ToastConfig, ToastDelivery, ToastHerdrPosition,
+        ToastConfig, ToastDelivery, ToastHerdrPosition,
         UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
     },
     sound::SoundConfig,

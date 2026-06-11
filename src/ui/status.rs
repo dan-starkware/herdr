@@ -1,167 +1,90 @@
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Clear, Paragraph},
     Frame,
 };
 
 use super::widgets::panel_contrast_fg;
 use crate::{
-    app::state::{CopyFeedback, Palette, ToastKind, ToastNotification},
-    config::{ToastClipboardPosition, ToastHerdrPosition},
+    app::state::{Palette, ToastKind},
+    app::AppState,
     detect::AgentState,
 };
 
-pub(crate) fn copy_feedback_rect(
-    area: Rect,
-    feedback: &CopyFeedback,
-    offset_rows: u16,
-    position: ToastClipboardPosition,
-) -> Rect {
+/// One-line notification status bar at the bottom of the screen. It shows, in
+/// priority order: a review-base fetch in flight, clipboard copy feedback, the
+/// active toast, or (dimmed) the last toast that already expired.
+pub(super) fn render_status_line(app: &AppState, frame: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
-        return Rect::default();
-    }
-
-    let content_width = feedback.message.len() as u16 + 4;
-    let width = content_width.min(area.width);
-    let height = 3u16.min(area.height);
-    let x = match position {
-        ToastClipboardPosition::TopLeft | ToastClipboardPosition::BottomLeft => area.x,
-        ToastClipboardPosition::TopCenter | ToastClipboardPosition::BottomCenter => {
-            area.x + area.width.saturating_sub(width) / 2
-        }
-        ToastClipboardPosition::TopRight | ToastClipboardPosition::BottomRight => {
-            area.x + area.width.saturating_sub(width)
-        }
-    };
-    let y = match position {
-        ToastClipboardPosition::TopLeft
-        | ToastClipboardPosition::TopCenter
-        | ToastClipboardPosition::TopRight => area.y + offset_rows.min(area.height),
-        ToastClipboardPosition::BottomLeft
-        | ToastClipboardPosition::BottomCenter
-        | ToastClipboardPosition::BottomRight => {
-            area.y + area.height.saturating_sub(height + offset_rows)
-        }
-    };
-    Rect::new(x, y, width, height)
-}
-
-pub(crate) fn toast_notification_rect(
-    area: Rect,
-    toast: &ToastNotification,
-    offset_for_warning: bool,
-    position: ToastHerdrPosition,
-) -> Rect {
-    let content_width = (toast.title.len().max(toast.context.len()) as u16) + 4;
-    let width = content_width.saturating_add(2).min(area.width);
-    let content_height = if toast.context.is_empty() { 1 } else { 2 };
-    let height = (content_height + 2).min(area.height);
-    let x = match position {
-        ToastHerdrPosition::TopLeft | ToastHerdrPosition::BottomLeft => area.x,
-        ToastHerdrPosition::TopRight | ToastHerdrPosition::BottomRight => {
-            area.x + area.width.saturating_sub(width)
-        }
-    };
-    let warning_offset = u16::from(offset_for_warning);
-    let y = match position {
-        ToastHerdrPosition::TopLeft | ToastHerdrPosition::TopRight => {
-            area.y + warning_offset.min(area.height)
-        }
-        ToastHerdrPosition::BottomLeft | ToastHerdrPosition::BottomRight => {
-            area.y + area.height.saturating_sub(height + warning_offset)
-        }
-    };
-    Rect::new(x, y, width, height)
-}
-
-pub(super) fn render_toast_notification(
-    frame: &mut Frame,
-    area: Rect,
-    toast: &ToastNotification,
-    offset_for_warning: bool,
-    position: ToastHerdrPosition,
-    p: &Palette,
-) {
-    let dot_color = match toast.kind {
-        ToastKind::NeedsAttention => p.red,
-        ToastKind::Finished => p.blue,
-        ToastKind::UpdateInstalled => p.accent,
-    };
-    let toast_area = toast_notification_rect(area, toast, offset_for_warning, position);
-
-    frame.render_widget(Clear, toast_area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(p.overlay0))
-        .style(Style::default().bg(p.panel_bg));
-    let inner = block.inner(toast_area);
-    frame.render_widget(block, toast_area);
-
-    if inner.height < 1 {
         return;
     }
+    let p = &app.palette;
+    let base = Style::default().bg(p.panel_bg);
 
-    let [title_row, context_row] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(inner);
+    let line = if let Some(fetch) = &app.control.review_base_fetch {
+        // A review-base fetch is in flight: a loading message takes the line
+        // (suppressing any toast underneath) and disappears exactly when the
+        // fetch lands and the review row opens.
+        Line::from(vec![
+            Span::styled(
+                format!(" {} ", super::spinner_frame(app.spinner_tick)),
+                Style::default().fg(p.yellow),
+            ),
+            Span::styled(
+                format!("fetching origin/{}", fetch.base_branch),
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" · review for PR #{} opens when done", fetch.pr_number),
+                Style::default().fg(p.overlay0),
+            ),
+        ])
+    } else if let Some(feedback) = &app.copy_feedback {
+        Line::from(vec![
+            Span::styled(" ● ", Style::default().fg(p.green)),
+            Span::styled(
+                feedback.message.as_str(),
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+        ])
+    } else if let Some(toast) = &app.toast {
+        let dot_color = match toast.kind {
+            ToastKind::NeedsAttention => p.red,
+            ToastKind::Finished => p.blue,
+            ToastKind::UpdateInstalled => p.accent,
+        };
+        let mut spans = vec![
+            Span::styled(" ● ", Style::default().fg(dot_color)),
+            Span::styled(
+                toast.title.as_str(),
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if !toast.context.is_empty() {
+            spans.push(Span::styled(
+                format!(" · {}", toast.context),
+                Style::default().fg(p.overlay0),
+            ));
+        }
+        Line::from(spans)
+    } else if let Some(toast) = &app.last_toast {
+        // Expired: keep the last notified message around, fully dimmed.
+        let dim = Style::default().fg(p.overlay0);
+        let mut spans = vec![
+            Span::styled(" ● ", dim),
+            Span::styled(toast.title.as_str(), dim),
+        ];
+        if !toast.context.is_empty() {
+            spans.push(Span::styled(format!(" · {}", toast.context), dim));
+        }
+        Line::from(spans)
+    } else {
+        Line::default()
+    };
 
-    let title = Line::from(vec![
-        Span::styled("●", Style::default().fg(dot_color)),
-        Span::raw(" "),
-        Span::styled(
-            &toast.title,
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    let context = Line::from(vec![
-        Span::styled("  ", Style::default().fg(p.overlay0)),
-        Span::styled(&toast.context, Style::default().fg(p.overlay0)),
-    ]);
-
-    frame.render_widget(Paragraph::new(title), title_row);
-    if !toast.context.is_empty() && inner.height >= 2 {
-        frame.render_widget(Paragraph::new(context), context_row);
-    }
-}
-
-pub(super) fn render_copy_feedback(
-    frame: &mut Frame,
-    area: Rect,
-    feedback: &CopyFeedback,
-    offset_rows: u16,
-    position: ToastClipboardPosition,
-    p: &Palette,
-) {
-    let feedback_area = copy_feedback_rect(area, feedback, offset_rows, position);
-    if feedback_area.is_empty() {
-        return;
-    }
-
-    frame.render_widget(Clear, feedback_area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(p.green))
-        .style(Style::default().bg(p.panel_bg));
-    let inner = block.inner(feedback_area);
-    frame.render_widget(block, feedback_area);
-
-    if inner.height == 0 {
-        return;
-    }
-
-    let text = Line::from(vec![
-        Span::styled("●", Style::default().fg(p.green).bg(p.panel_bg)),
-        Span::raw(" "),
-        Span::styled(
-            &feedback.message,
-            Style::default()
-                .fg(p.text)
-                .bg(p.panel_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(text), inner);
+    frame.render_widget(Paragraph::new(line).style(base), area);
 }
 
 pub(super) fn render_config_diagnostic(frame: &mut Frame, area: Rect, message: &str, p: &Palette) {
@@ -228,66 +151,69 @@ pub(super) fn state_label_color(state: AgentState, seen: bool, p: &Palette) -> C
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ToastClipboardPosition, ToastHerdrPosition};
+    use crate::app::state::{CopyFeedback, ToastNotification};
+    use ratatui::{backend::TestBackend, Terminal};
 
-    fn toast() -> ToastNotification {
+    fn toast(title: &str, context: &str) -> ToastNotification {
         ToastNotification {
-            kind: ToastKind::Finished,
-            title: "done".to_string(),
-            context: "workspace".to_string(),
+            kind: ToastKind::NeedsAttention,
+            title: title.to_string(),
+            context: context.to_string(),
             position: None,
             target: None,
         }
     }
 
-    fn feedback() -> CopyFeedback {
-        CopyFeedback {
+    fn rendered_status_line(app: &crate::app::state::AppState) -> String {
+        let backend = TestBackend::new(80, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_status_line(app, frame, frame.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn status_line_shows_active_toast_on_one_line() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.toast = Some(toast("reviewing", "PR #14449 · my_branch"));
+
+        let text = rendered_status_line(&app);
+        assert!(
+            text.contains("● reviewing · PR #14449 · my_branch"),
+            "unexpected status line: {text:?}"
+        );
+    }
+
+    #[test]
+    fn status_line_keeps_showing_last_toast_after_expiry() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.toast = None;
+        app.last_toast = Some(toast("checked out", "my_branch"));
+
+        let text = rendered_status_line(&app);
+        assert!(
+            text.contains("● checked out · my_branch"),
+            "unexpected status line: {text:?}"
+        );
+    }
+
+    #[test]
+    fn status_line_prefers_copy_feedback_over_toast() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.toast = Some(toast("reviewing", "PR #1"));
+        app.copy_feedback = Some(CopyFeedback {
             message: "copied to clipboard".to_string(),
-        }
-    }
+        });
 
-    #[test]
-    fn toast_rect_uses_configured_corner() {
-        let area = Rect::new(10, 20, 100, 40);
-        let toast = toast();
-
-        let top_left = toast_notification_rect(area, &toast, false, ToastHerdrPosition::TopLeft);
-        assert_eq!(top_left.x, area.x);
-        assert_eq!(top_left.y, area.y);
-
-        let top_right = toast_notification_rect(area, &toast, false, ToastHerdrPosition::TopRight);
-        assert_eq!(top_right.x + top_right.width, area.x + area.width);
-        assert_eq!(top_right.y, area.y);
-
-        let bottom_left =
-            toast_notification_rect(area, &toast, false, ToastHerdrPosition::BottomLeft);
-        assert_eq!(bottom_left.x, area.x);
-        assert_eq!(bottom_left.y + bottom_left.height, area.y + area.height);
-
-        let bottom_right =
-            toast_notification_rect(area, &toast, false, ToastHerdrPosition::BottomRight);
-        assert_eq!(bottom_right.x + bottom_right.width, area.x + area.width);
-        assert_eq!(bottom_right.y + bottom_right.height, area.y + area.height);
-    }
-
-    #[test]
-    fn copy_feedback_rect_uses_configured_position() {
-        let area = Rect::new(10, 20, 100, 40);
-        let feedback = feedback();
-
-        let top_center = copy_feedback_rect(area, &feedback, 0, ToastClipboardPosition::TopCenter);
-        assert_eq!(top_center.y, area.y);
-        assert_eq!(
-            top_center.x,
-            area.x + area.width.saturating_sub(top_center.width) / 2
+        let text = rendered_status_line(&app);
+        assert!(
+            text.contains("copied to clipboard"),
+            "unexpected status line: {text:?}"
         );
-
-        let bottom_center =
-            copy_feedback_rect(area, &feedback, 0, ToastClipboardPosition::BottomCenter);
-        assert_eq!(bottom_center.y + bottom_center.height, area.y + area.height);
-        assert_eq!(
-            bottom_center.x,
-            area.x + area.width.saturating_sub(bottom_center.width) / 2
-        );
+        assert!(!text.contains("reviewing"));
     }
 }

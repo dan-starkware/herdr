@@ -28,10 +28,7 @@ pub(crate) use self::release_notes::{
 };
 use self::release_notes::{render_product_announcement_overlay, render_release_notes_overlay};
 use self::settings::render_settings_overlay;
-use self::status::{
-    copy_feedback_rect, render_config_diagnostic, render_copy_feedback, render_toast_notification,
-    toast_notification_rect,
-};
+use self::status::{render_config_diagnostic, render_status_line};
 pub(crate) use self::{
     keybind_help::keybind_help_lines,
     panes::pane_is_scrolled_back,
@@ -125,13 +122,16 @@ fn compute_view_internal(
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
     // Keyboard-first home is the only layout: a fixed-width left column (Control
-    // + Agents halves) and the Main pane framed in a focus box on the right.
+    // + Agents halves) and the Main pane framed in a focus box on the right,
+    // with a one-line notification status bar reserved at the very bottom.
     let sidebar_w = app
         .sidebar_width
         .clamp(app.sidebar_min_width, app.sidebar_max_width);
 
+    let [content_area, status_line_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
     let [sidebar_area, main_area] =
-        Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(1)]).areas(area);
+        Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(1)]).areas(content_area);
 
     // The Main pane's focus-box border occupies one cell on each side, so the
     // terminal content is inset accordingly.
@@ -165,19 +165,6 @@ fn compute_view_internal(
         );
     }
 
-    let toast_hit_area = app
-        .toast
-        .as_ref()
-        .map(|toast| {
-            toast_notification_rect(
-                area,
-                toast,
-                app.config_diagnostic.is_some(),
-                toast.position.unwrap_or(app.toast_config.herdr.position),
-            )
-        })
-        .unwrap_or_default();
-
     app.view = crate::app::ViewState {
         layout: ViewLayout::Desktop,
         sidebar_rect: sidebar_area,
@@ -190,7 +177,7 @@ fn compute_view_internal(
         terminal_area,
         mobile_header_rect: Rect::default(),
         mobile_menu_hit_area: Rect::default(),
-        toast_hit_area,
+        status_line_rect: status_line_area,
         pane_infos,
         split_borders,
         home_main_rect,
@@ -290,100 +277,10 @@ fn render_home_main_border(app: &AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_notifications(app: &AppState, frame: &mut Frame, terminal_area: Rect) {
-    let has_config_diagnostic = app.config_diagnostic.is_some();
     if let Some(message) = &app.config_diagnostic {
         render_config_diagnostic(frame, terminal_area, message, &app.palette);
     }
-    let mut copy_feedback_offset = u16::from(has_config_diagnostic);
-    let mut toast_rect = None;
-    if let Some(fetch) = &app.control.review_base_fetch {
-        // A review-base fetch is in flight: a loading box takes the toast slot
-        // (suppressing any toast underneath) and disappears exactly when the
-        // fetch lands and the review row opens.
-        let loading = crate::app::state::ToastNotification {
-            kind: crate::app::state::ToastKind::Finished,
-            title: format!(
-                "{} fetching origin/{}",
-                spinner_frame(app.spinner_tick),
-                fetch.base_branch
-            ),
-            context: format!("review for PR #{} opens when done", fetch.pr_number),
-            position: None,
-            target: None,
-        };
-        let position = app.toast_config.herdr.position;
-        render_toast_notification(
-            frame,
-            frame.area(),
-            &loading,
-            has_config_diagnostic,
-            position,
-            &app.palette,
-        );
-        toast_rect = Some(toast_notification_rect(
-            frame.area(),
-            &loading,
-            has_config_diagnostic,
-            position,
-        ));
-    } else if let Some(toast) = &app.toast {
-        render_toast_notification(
-            frame,
-            frame.area(),
-            toast,
-            has_config_diagnostic,
-            toast.position.unwrap_or(app.toast_config.herdr.position),
-            &app.palette,
-        );
-        toast_rect = Some(toast_notification_rect(
-            frame.area(),
-            toast,
-            has_config_diagnostic,
-            toast.position.unwrap_or(app.toast_config.herdr.position),
-        ));
-    }
-    if let Some(feedback) = &app.copy_feedback {
-        let area = terminal_area;
-        if let Some(toast_rect) = toast_rect {
-            copy_feedback_offset = copy_feedback_offset_for_toast(
-                area,
-                feedback,
-                copy_feedback_offset,
-                app.toast_config.clipboard.position,
-                toast_rect,
-            );
-        }
-        render_copy_feedback(
-            frame,
-            area,
-            feedback,
-            copy_feedback_offset,
-            app.toast_config.clipboard.position,
-            &app.palette,
-        );
-    }
-}
-
-fn copy_feedback_offset_for_toast(
-    area: Rect,
-    feedback: &crate::app::state::CopyFeedback,
-    base_offset: u16,
-    position: crate::config::ToastClipboardPosition,
-    toast_rect: Rect,
-) -> u16 {
-    let feedback_rect = copy_feedback_rect(area, feedback, base_offset, position);
-    if rects_overlap(feedback_rect, toast_rect) {
-        base_offset.saturating_add(toast_rect.height)
-    } else {
-        base_offset
-    }
-}
-
-fn rects_overlap(a: Rect, b: Rect) -> bool {
-    a.x < b.x.saturating_add(b.width)
-        && b.x < a.x.saturating_add(a.width)
-        && a.y < b.y.saturating_add(b.height)
-        && b.y < a.y.saturating_add(a.height)
+    render_status_line(app, frame, app.view.status_line_rect);
 }
 
 fn dim_background(frame: &mut Frame, area: Rect) {
@@ -418,50 +315,6 @@ mod tests {
     use crate::config::keybinds::{CustomCommandAction, CustomCommandKeybind};
     use crate::{app::state::ViewLayout, layout::PaneInfo, workspace::Workspace};
     use ratatui::{backend::TestBackend, Terminal};
-
-    #[test]
-    fn copy_feedback_offset_only_increases_when_toast_rect_overlaps() {
-        let area = Rect::new(0, 0, 80, 24);
-        let feedback = crate::app::state::CopyFeedback {
-            message: "copied to clipboard".into(),
-        };
-        let toast = crate::app::state::ToastNotification {
-            kind: crate::app::state::ToastKind::Finished,
-            title: "pi finished".into(),
-            context: "workspace · 1".into(),
-            position: None,
-            target: None,
-        };
-
-        let bottom_right_toast = toast_notification_rect(
-            area,
-            &toast,
-            false,
-            crate::config::ToastHerdrPosition::BottomRight,
-        );
-        assert_eq!(
-            copy_feedback_offset_for_toast(
-                area,
-                &feedback,
-                0,
-                crate::config::ToastClipboardPosition::TopCenter,
-                bottom_right_toast,
-            ),
-            0
-        );
-
-        let bottom_center_toast = Rect::new(28, 21, 24, 3);
-        assert_eq!(
-            copy_feedback_offset_for_toast(
-                area,
-                &feedback,
-                0,
-                crate::config::ToastClipboardPosition::BottomCenter,
-                bottom_center_toast,
-            ),
-            bottom_center_toast.height
-        );
-    }
 
     #[tokio::test]
     async fn focused_pane_cursor_wins_during_terminal_render() {
@@ -504,38 +357,36 @@ mod tests {
     }
 
     #[test]
-    fn desktop_toast_hit_area_uses_full_frame_not_terminal_area() {
+    fn status_line_is_reserved_below_main_pane() {
         let mut app = crate::app::state::AppState::test_new();
         app.workspaces = vec![Workspace::test_new("one")];
         app.active = Some(0);
         app.selected = 0;
         app.mode = Mode::Home;
-        app.toast_config.herdr.position = crate::config::ToastHerdrPosition::TopLeft;
-        app.toast = Some(crate::app::state::ToastNotification {
-            kind: crate::app::state::ToastKind::Finished,
-            title: "pi finished".into(),
-            context: "one".into(),
-            position: None,
-            target: None,
-        });
 
         compute_view(&mut app, Rect::new(0, 0, 100, 20));
 
         assert_eq!(app.view.layout, ViewLayout::Desktop);
-        assert!(app.view.terminal_area.x > 0);
-        assert_eq!(app.view.toast_hit_area.x, 0);
-        assert_eq!(app.view.toast_hit_area.y, 0);
+        // The status line spans the full bottom row of the screen...
+        assert_eq!(app.view.status_line_rect, Rect::new(0, 19, 100, 1));
+        // ...and the sidebar and the Main pane sit entirely above it.
+        assert_eq!(
+            app.view.sidebar_rect.y + app.view.sidebar_rect.height,
+            app.view.status_line_rect.y
+        );
+        assert_eq!(
+            app.view.home_main_rect.y + app.view.home_main_rect.height,
+            app.view.status_line_rect.y
+        );
     }
 
     #[test]
-    fn desktop_toast_hit_area_still_offsets_for_config_diagnostic() {
+    fn toast_renders_on_status_line_without_hiding_panes() {
         let mut app = crate::app::state::AppState::test_new();
         app.workspaces = vec![Workspace::test_new("one")];
         app.active = Some(0);
         app.selected = 0;
         app.mode = Mode::Home;
-        app.config_diagnostic = Some("config warning".into());
-        app.toast_config.herdr.position = crate::config::ToastHerdrPosition::TopLeft;
         app.toast = Some(crate::app::state::ToastNotification {
             kind: crate::app::state::ToastKind::Finished,
             title: "pi finished".into(),
@@ -544,10 +395,24 @@ mod tests {
             target: None,
         });
 
-        compute_view(&mut app, Rect::new(0, 0, 100, 20));
+        let area = Rect::new(0, 0, 100, 20);
+        compute_view(&mut app, area);
 
-        assert_eq!(app.view.toast_hit_area.x, 0);
-        assert_eq!(app.view.toast_hit_area.y, 1);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(&app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let bottom_row: String = (0..area.width)
+            .map(|x| buffer[(x, area.height - 1)].symbol().to_string())
+            .collect();
+        assert!(
+            bottom_row.contains("● pi finished · one"),
+            "unexpected bottom row: {bottom_row:?}"
+        );
+        // The toast stays out of the Main pane's rows.
+        let terminal_area = app.view.terminal_area;
+        assert!(terminal_area.y + terminal_area.height < area.height);
     }
 
     #[test]

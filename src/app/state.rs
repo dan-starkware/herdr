@@ -700,7 +700,9 @@ pub struct ViewState {
     pub terminal_area: Rect,
     pub mobile_header_rect: Rect,
     pub mobile_menu_hit_area: Rect,
-    pub toast_hit_area: Rect,
+    /// One-line notification status bar reserved at the bottom of the screen,
+    /// below the sidebar and the Main pane.
+    pub status_line_rect: Rect,
     pub pane_infos: Vec<PaneInfo>,
     pub split_borders: Vec<SplitBorder>,
     /// In the keyboard-first home surface, the outer rect of the Main pane box
@@ -1423,6 +1425,9 @@ pub struct AppState {
     pub update_dismissed: bool,
     pub config_diagnostic: Option<String>,
     pub toast: Option<ToastNotification>,
+    /// The most recent toast whose deadline elapsed. The status line keeps
+    /// showing it (dimmed) until a new notification replaces it.
+    pub last_toast: Option<ToastNotification>,
     pub pending_agent_notifications: std::collections::HashMap<PaneId, PendingAgentNotification>,
     pub copy_feedback: Option<CopyFeedback>,
     /// Last reported focus state for the outer terminal hosting herdr.
@@ -1730,7 +1735,7 @@ impl AppState {
                 terminal_area: Rect::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),
-                toast_hit_area: Rect::default(),
+                status_line_rect: Rect::default(),
                 pane_infos: Vec::new(),
                 split_borders: Vec::new(),
                 home_main_rect: Rect::default(),
@@ -1744,6 +1749,7 @@ impl AppState {
             update_dismissed: false,
             config_diagnostic: None,
             toast: None,
+            last_toast: None,
             pending_agent_notifications: std::collections::HashMap::new(),
             copy_feedback: None,
             outer_terminal_focus: None,

@@ -2683,11 +2683,12 @@ impl HeadlessServer {
     }
 
     fn retained_pty_update_allowed_by_app_state(&self) -> bool {
+        // Toasts live on the status line below the panes, so pane-content
+        // patches can never overwrite them — no need to decline for them here.
         self.app.state.main_focused()
             && self.app.state.selection.is_none()
             && self.app.state.copy_mode.is_none()
             && self.app.state.context_menu.is_none()
-            && self.app.state.toast.is_none()
             && !self.app.full_redraw_pending
     }
 
@@ -5930,8 +5931,12 @@ next_tab = ""
     }
 
     #[tokio::test]
-    async fn retained_pty_update_declines_while_toast_is_visible() {
+    async fn retained_pty_update_streams_while_toast_is_visible() {
+        let _render_guard = crate::kitty_graphics::RENDER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut server, client_rx, pane_id) = retained_test_server(b"aaaa");
+        server.app.state.control.focus = crate::app::state::FocusPane::Main;
         server.app.state.toast = Some(crate::app::state::ToastNotification {
             kind: crate::app::state::ToastKind::NeedsAttention,
             title: "pi needs attention".to_owned(),
@@ -5947,27 +5952,28 @@ next_tab = ""
         );
         assert!(
             frame_text(&initial).contains("pi needs attention"),
-            "expected initial full frame to include toast text"
+            "expected initial full frame to include status-line toast text"
         );
 
-        let toast_row = server.app.state.view.toast_hit_area.y;
-        let inner_rect = server.app.state.view.pane_infos[0].inner_rect;
-        let pane_row = toast_row
-            .checked_sub(inner_rect.y)
-            .expect("toast should overlap the pane")
-            + 1;
-        assert!(pane_row <= inner_rect.height);
         let runtime = server
             .app
             .state
             .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
             .expect("runtime");
-        runtime.test_process_pty_bytes(format!("\x1b[{pane_row};1Hzzzz").as_bytes());
+        runtime.test_process_pty_bytes(b"\rZ");
 
-        assert!(!server.render_retained_pty_update_and_stream());
+        // The toast lives on the status line below the panes, so pane-content
+        // patches stay safe and the retained fast path keeps streaming.
+        assert!(server.render_retained_pty_update_and_stream());
+        let patched = read_server_frame(
+            client_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("retained frame"),
+        );
+        assert!(patched.cells.iter().any(|cell| cell.symbol == "Z"));
         assert!(
-            client_rx.recv_timeout(Duration::from_millis(50)).is_err(),
-            "retained path should not stream a frame that can overwrite toast cells"
+            frame_text(&patched).contains("pi needs attention"),
+            "status-line toast should survive a retained pane patch"
         );
     }
 

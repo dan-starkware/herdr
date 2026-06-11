@@ -205,7 +205,9 @@ impl App {
 
         if self.toast_deadline.is_some_and(|deadline| now >= deadline) {
             self.toast_deadline = None;
-            self.state.toast = None;
+            // Expired toasts linger on the status line (dimmed) as the last
+            // notified message until a new notification replaces them.
+            self.state.last_toast = self.state.toast.take();
             changed = true;
         }
 
