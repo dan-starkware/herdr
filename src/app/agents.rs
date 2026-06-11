@@ -633,7 +633,8 @@ impl App {
                         terminal.set_manual_label(name);
                     }
                 }
-                // Surface the new agent in Main while staying in the home shell.
+                // Surface the new agent in Main while staying in the home shell
+                // (with the picker open, the close below keeps focus on it).
                 self.state.active = Some(ws_idx);
                 self.state.selected = ws_idx;
                 self.state.control.focus = crate::app::state::FocusPane::Main;
@@ -644,9 +645,25 @@ impl App {
                 self.state.set_home_toast("create agent failed", body.message);
             }
         }
+        self.close_create_form_after_agent();
+    }
+
+    /// Close the create-agent form after the agent was (attempted to be)
+    /// opened. When the flow was launched from the branch picker, return to
+    /// the picker — re-listing the branches so a just-created branch shows up,
+    /// with the selection kept on the branch it was on — so more agents can be
+    /// opened without reopening it; Esc in the picker still closes it. Without
+    /// a picker, land back on the home surface.
+    pub(super) fn close_create_form_after_agent(&mut self) {
         self.state.control.reset_create_form();
-        self.state.mode = Mode::Home;
         self.state.name_input.clear();
+        if let Some(review) = self.state.control.review.as_mut() {
+            review.refresh_branches();
+            self.state.mode = Mode::Review;
+            self.state.control.focus = crate::app::state::FocusPane::Control;
+        } else {
+            self.state.mode = Mode::Home;
+        }
     }
 
     /// Handle a key while confirming what to do because the chosen base branch is
@@ -884,6 +901,8 @@ impl App {
             // move to the name form (alt pre-checks "create a new branch"); on
             // the PR list, open the PR for review in its own workspace. Neither
             // depends on what the Main pane currently holds — only `c` does.
+            // Either way the picker stays open once the agent/workspace opens,
+            // so more branches/PRs can be opened without reopening it.
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if prs_shown {
                     self.open_selected_pr_for_review();
@@ -1049,13 +1068,10 @@ impl App {
         self.state.mark_session_dirty();
         self.state.set_home_toast("checked out", branch_name);
         // Stay in the picker on the same repo so you can keep checking branches
-        // out; refresh the branch list (and clamp the selection) so the
+        // out; refresh the branch list (keeping the selection in place) so the
         // current-branch marker reflects the checkout just performed.
         if let Some(review) = self.state.control.review.as_mut() {
-            review.branches = crate::workspace::list_review_branches(&review.repo.root);
-            if review.selected >= review.branches.len() {
-                review.selected = review.branches.len().saturating_sub(1);
-            }
+            review.refresh_branches();
         }
     }
 
@@ -1183,7 +1199,7 @@ impl App {
         // Keep the picker's branch list (shown when toggling back) in sync
         // with the checkout just performed.
         if let Some(review) = self.state.control.review.as_mut() {
-            review.branches = crate::workspace::list_review_branches(&review.repo.root);
+            review.refresh_branches();
         }
     }
 
@@ -1266,13 +1282,12 @@ impl App {
         }
 
         self.finish_create_agent(&repo, &checkout_path, name);
-        // finish_create_agent toasts on spawn failure; in that case there is no
-        // new workspace to tag, so put the picker back up and stop.
+        // finish_create_agent toasts on spawn failure and has already put the
+        // picker back up; in that case there is no new workspace to tag, so stop.
         let Some(ws_idx) = self.state.workspaces.iter().position(|ws| {
             ws.worktree_space()
                 .is_some_and(|space| space.checkout_path == checkout_path)
         }) else {
-            self.state.mode = Mode::Review;
             return;
         };
         self.finish_open_pr_review(ws_idx, pr);
@@ -1280,7 +1295,8 @@ impl App {
 
     /// Shared tail of opening a PR for review in workspace `ws_idx` (which is
     /// already active): tag it with the PR, open the review row against the PR
-    /// base (respawning a stale one), and leave the picker for the Main pane.
+    /// base (respawning a stale one), and keep the picker open and focused so
+    /// more PRs can be opened straight away.
     fn finish_open_pr_review(&mut self, ws_idx: usize, pr: crate::workspace::ReviewPr) {
         let toast = format!("PR #{} · {}", pr.number, pr.head_branch);
         if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
@@ -1300,9 +1316,11 @@ impl App {
             self.toggle_review_row();
         }
         self.state.mark_session_dirty();
-        self.state.mode = Mode::Home;
-        self.state.control.review = None;
-        self.state.control.focus = crate::app::state::FocusPane::Main;
+        // Keep the picker open and focused — selection still on the PR just
+        // opened — so more PRs can be opened without reopening it; the new
+        // workspace is surfaced in Main behind it. Esc still closes the picker.
+        self.state.mode = Mode::Review;
+        self.state.control.focus = crate::app::state::FocusPane::Control;
         self.state.set_home_toast("reviewing", toast);
     }
 

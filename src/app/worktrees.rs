@@ -720,6 +720,106 @@ mod tests {
         assert_eq!(worktree_head_branch(&other), "feat");
     }
 
+    #[test]
+    fn create_agent_close_returns_to_the_picker_with_branches_refreshed() {
+        let repo = create_committed_repo("picker-reopen-repo");
+        run_git(&repo, &["branch", "a-feat"]);
+        run_git(&repo, &["branch", "b-feat"]);
+        let wt = unique_temp_path("picker-reopen-wt");
+
+        // The picker's cached list is stale (only "b-feat", at index 0) and the
+        // create flow is mid-form, as when finish_create_agent has just
+        // spawned the agent.
+        let mut app = app_with_picker_on_worktree(&repo, &wt, &["b-feat"]);
+        app.state.mode = Mode::CreateAgent;
+
+        app.close_create_form_after_agent();
+
+        // Back in the picker (not Home) with focus on it, the branch list
+        // re-listed from the repo (default branch + the two feats), and the
+        // selection following "b-feat" by name even though its index moved —
+        // a clamp would have left it on index 0, the current branch.
+        assert_eq!(app.state.mode, Mode::Review);
+        assert_eq!(app.state.control.focus, crate::app::state::FocusPane::Control);
+        let review = app.state.control.review.as_ref().unwrap();
+        assert_eq!(review.branches.len(), 3);
+        assert_eq!(review.branches[review.selected].name, "b-feat");
+        assert_ne!(review.selected, 0);
+    }
+
+    #[test]
+    fn create_agent_close_without_a_picker_lands_home() {
+        let mut app = app_for_worktree_tests();
+        app.state.mode = Mode::CreateAgent;
+        assert!(app.state.control.review.is_none());
+        app.close_create_form_after_agent();
+        assert_eq!(app.state.mode, Mode::Home);
+    }
+
+    #[test]
+    fn space_on_a_pr_reuses_the_workspace_and_keeps_the_picker_open() {
+        let pr = crate::workspace::ReviewPr {
+            number: 7,
+            title: "Add feature".into(),
+            author: "bob".into(),
+            head_branch: "bob/feature".into(),
+            base_branch: "main".into(),
+            url: "https://github.com/acme/proj/pull/7".into(),
+            graph_prefix: String::new(),
+        };
+
+        // A workspace already checked out on the PR's head branch, so space
+        // takes the (gh-free) reuse path. The identity cwd points at a non-repo
+        // so the background base fetch fails fast instead of hitting the
+        // network.
+        let mut app = app_for_worktree_tests();
+        let mut ws = crate::workspace::Workspace::test_new("pr-ws");
+        ws.identity_cwd = std::env::temp_dir();
+        ws.cached_git_branch = Some(pr.head_branch.clone());
+        ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "k".into(),
+            label: "repo".into(),
+            repo_root: "/a".into(),
+            checkout_path: "/a-wt".into(),
+            is_linked_worktree: true,
+        });
+        app.state.workspaces = vec![ws];
+        app.state.mode = Mode::Review;
+        app.state.control.focus = crate::app::state::FocusPane::Control;
+        app.state.control.review = Some(crate::app::state::ReviewState {
+            repo: crate::workspace::Repository {
+                key: "k".into(),
+                root: "/a".into(),
+                label: "repo".into(),
+            },
+            branches: Vec::new(),
+            selected: 0,
+            scroll: 0,
+            source: crate::app::state::PickerSource::ReviewRequests,
+            prs: Some(vec![pr]),
+        });
+
+        app.handle_review_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(' '),
+            crossterm::event::KeyModifiers::empty(),
+        ));
+
+        // The PR's workspace was activated and tagged for review...
+        assert_eq!(app.state.active, Some(0));
+        assert_eq!(
+            app.state.workspaces[0].reviewing_pr.as_ref().map(|p| p.number),
+            Some(7)
+        );
+        // ...and the picker stayed open and focused, still on the PR list with
+        // the selection on the PR just opened.
+        assert_eq!(app.state.mode, Mode::Review);
+        assert_eq!(app.state.control.focus, crate::app::state::FocusPane::Control);
+        let review = app.state.control.review.as_ref().expect("picker still open");
+        assert_eq!(review.source, crate::app::state::PickerSource::ReviewRequests);
+        assert_eq!(review.selected, 0);
+        assert_eq!(app.state.toast.as_ref().expect("toast set").title, "reviewing");
+    }
+
     fn unique_temp_path(name: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -871,6 +871,23 @@ impl ReviewState {
             PickerSource::ReviewRequests => self.prs.as_ref()?.get(self.selected),
         }
     }
+
+    /// Re-list the repo's branches after a checkout or branch creation made
+    /// the cached list stale. When the branch list is the one shown, the
+    /// selection follows the branch it was on (by name), falling back to a
+    /// clamp when that branch is gone; the PR list's selection indexes PRs and
+    /// is left untouched.
+    pub fn refresh_branches(&mut self) {
+        let selected_branch = (self.source == PickerSource::Branches)
+            .then(|| self.branches.get(self.selected).map(|b| b.name.clone()))
+            .flatten();
+        self.branches = crate::workspace::list_review_branches(&self.repo.root);
+        if self.source == PickerSource::Branches {
+            self.selected = selected_branch
+                .and_then(|name| self.branches.iter().position(|b| b.name == name))
+                .unwrap_or_else(|| self.selected.min(self.branches.len().saturating_sub(1)));
+        }
+    }
 }
 
 /// A row in the create-agent form. Rows are navigated with up/down and the
