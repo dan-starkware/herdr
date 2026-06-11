@@ -1871,6 +1871,11 @@ impl App {
             return;
         };
         let reviewing = ws.reviewing_pr_active().cloned();
+        // Match the review row's diff base (see `row_spawn_spec`).
+        let base = match &reviewing {
+            Some(pr) => format!("origin/{}", pr.base_branch),
+            None => crate::workspace::review_base(&repo_root, &branch),
+        };
 
         // Guard: don't clobber a half-typed prompt.
         if self.agent_prompt_busy(ws_idx, agent_pane) {
@@ -1881,11 +1886,9 @@ impl App {
             return;
         }
 
-        // Match the review row's diff (see `row_spawn_spec`): the PR's remote
-        // refs while reviewing, the graphite-parent/default base otherwise.
         let prompt = match &reviewing {
-            Some(pr) => claude_reply_prompt(pr),
-            None => claude_fix_prompt(&crate::workspace::review_base(&repo_root, &branch)),
+            Some(pr) => claude_reply_prompt(&base, pr),
+            None => claude_fix_prompt(&base),
         };
         let send_result: Result<(), String> = match self.lookup_runtime_sender(ws_idx, agent_pane)
         {
@@ -2076,19 +2079,11 @@ comment. After applying each fix, remove the `CLAUDE:` comment."
 /// PR: instead of fixing the code, turn the user's `CLAUDE:` review notes into
 /// PR review comments — drafted together with the user, then submitted via
 /// `gh` — and clean the notes out of the worktree afterwards.
-///
-/// The review row shows the PR's remote refs (fugitive buffers over
-/// `origin/<base>`..`origin/<head>`, no files on disk), so the prompt points
-/// the agent at those refs for the PR's diff and at the worktree for the
-/// user's notes.
-fn claude_reply_prompt(pr: &crate::workspace::ReviewPr) -> String {
+fn claude_reply_prompt(base: &str, pr: &crate::workspace::ReviewPr) -> String {
     format!(
         "I'm reviewing PR #{number} ({url}) by {author}. This branch is theirs — do NOT \
-change their code. The PR's diff — exactly what my review tool shows — is \
-`git diff origin/{base}...origin/{head}` (both refs are already fetched; use \
-`git show origin/{head}:<path>` for a file's full content at the PR tip). My review \
-notes are comments starting with `CLAUDE:` that I added to the checked-out files in \
-this worktree (find them with `grep -rn 'CLAUDE:'`).\n\
+change their code. My review notes are comments starting with `CLAUDE:` that I added to \
+the diff against the PR base (`git diff {base}...HEAD`).\n\
 1. Collect every `CLAUDE:` note, with its file and line in the PR's diff.\n\
 2. Fetch the PR's existing review threads: \
 `gh api repos/{{owner}}/{{repo}}/pulls/{number}/comments` (resolve {{owner}}/{{repo}} from \
@@ -2105,8 +2100,6 @@ touched files or delete just those comment lines) so the checkout is clean.",
         number = pr.number,
         url = pr.url,
         author = pr.author,
-        base = pr.base_branch,
-        head = pr.head_branch,
     )
 }
 
@@ -2151,12 +2144,11 @@ mod claude_fix_tests {
             url: "https://github.com/acme/proj/pull/412".to_string(),
             graph_prefix: String::new(),
         };
-        let p = claude_reply_prompt(&pr);
-        // Targets the PR, diffs the same remote refs as the review row.
+        let p = claude_reply_prompt("origin/master", &pr);
+        // Targets the PR, diffs the same base as the review row.
         assert!(p.contains("PR #412"));
         assert!(p.contains("https://github.com/acme/proj/pull/412"));
-        assert!(p.contains("git diff origin/master...origin/alice/fix-parser"));
-        assert!(p.contains("git show origin/alice/fix-parser:"));
+        assert!(p.contains("git diff origin/master...HEAD"));
         // It's someone else's branch: no code changes, drafts need approval.
         assert!(p.contains("do NOT"));
         assert!(p.contains("approve"));
