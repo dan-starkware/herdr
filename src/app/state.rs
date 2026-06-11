@@ -961,15 +961,17 @@ pub struct ControlState {
     /// check the branch into the Main pane, set while in
     /// [`Mode::ConfirmCheckoutDetach`].
     pub checkout_conflict: Option<CheckoutConflict>,
-    /// In-flight `git fetch origin <base> <head>` freshening a PR review's
-    /// refs before its review row spawns. Rendered as a loading box in the
-    /// toast slot; the fetch-finished handler clears it and opens the row.
+    /// In-flight `git fetch origin <base> <head>` (plus a worktree sync to
+    /// `origin/<head>`) freshening a PR review before its review row spawns.
+    /// Rendered as a loading box in the toast slot; the fetch-finished
+    /// handler clears it and opens the row.
     pub review_base_fetch: Option<ReviewBaseFetchState>,
 }
 
-/// A background fetch of a PR's base and head branches from origin, keeping
-/// the review row's `origin/<base>`..`origin/<head>` diff current. One runs
-/// at a time.
+/// A background fetch of a PR's base and head branches from origin (followed
+/// by a worktree sync to `origin/<head>`), keeping the review row's diff
+/// against `origin/<base>` true to the PR as the remote has it. One runs at
+/// a time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewBaseFetchState {
     /// Id of the workspace whose review row is waiting on the fetch.

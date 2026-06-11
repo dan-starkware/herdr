@@ -1713,10 +1713,14 @@ impl App {
     }
 
     /// While workspace `ws_idx` is reviewing someone else's PR, start a
-    /// background `git fetch origin <base> <head>` so the review row's
-    /// `origin/<base>`..`origin/<head>` diff reflects the PR as GitHub sees it
-    /// (remote-tracking refs are only as fresh as the last fetch). Returns true
-    /// when the caller must NOT spawn the review row yet —
+    /// background `git fetch origin <base> <head>` followed by a sync of the
+    /// worktree to `origin/<head>`, so the review row's worktree-vs-
+    /// `origin/<base>` diff reflects the PR exactly as GitHub sees it
+    /// (remote-tracking refs are only as fresh as the last fetch, and the
+    /// local checkout of the PR head can lag the remote). The sync is skipped
+    /// — with a toast — when the worktree has local changes or local commits
+    /// ahead of the remote, so in-flight `CLAUDE:` notes are never destroyed.
+    /// Returns true when the caller must NOT spawn the review row yet —
     /// [`Self::handle_review_base_fetch_finished`] spawns it when the fetch
     /// lands. A loading box renders in the toast slot meanwhile.
     fn start_review_base_fetch(&mut self, ws_idx: usize) -> bool {
@@ -1740,6 +1744,10 @@ impl App {
             .worktree_space()
             .map(|space| space.repo_root.clone())
             .unwrap_or_else(|| ws.identity_cwd.clone());
+        let checkout_path = ws
+            .worktree_space()
+            .map(|space| space.checkout_path.clone())
+            .unwrap_or_else(|| ws.identity_cwd.clone());
         self.state.control.review_base_fetch =
             Some(crate::app::state::ReviewBaseFetchState {
                 workspace_id: workspace_id.clone(),
@@ -1749,15 +1757,8 @@ impl App {
         tracing::info!(pr = pr.number, base = %base_branch, head = %head_branch, "starting review-refs fetch");
         let event_tx = self.event_tx.clone();
         std::thread::spawn(move || {
-            let result = match std::process::Command::new("git")
-                .current_dir(&repo_root)
-                .args(["fetch", "origin", &base_branch, &head_branch])
-                .output()
-            {
-                Ok(out) if out.status.success() => Ok(()),
-                Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
-                Err(err) => Err(format!("git not available: {err}")),
-            };
+            let result =
+                fetch_and_sync_review_worktree(&repo_root, &checkout_path, &base_branch, &head_branch);
             let _ = event_tx.blocking_send(crate::events::AppEvent::ReviewBaseFetchFinished(
                 crate::events::ReviewBaseFetchResult {
                     workspace_id,
@@ -1768,10 +1769,10 @@ impl App {
         true
     }
 
-    /// Background review-base fetch completed: clear the loading state and
-    /// spawn the review row that was waiting on it. A failed fetch still opens
-    /// the row — a possibly-stale `origin/<base>` beats no review — but says
-    /// so in a toast.
+    /// Background review-base fetch/sync completed: clear the loading state
+    /// and spawn the review row that was waiting on it. A failed fetch or a
+    /// skipped worktree sync still opens the row — a possibly-stale review
+    /// beats no review — but says so in a toast.
     pub(crate) fn handle_review_base_fetch_finished(
         &mut self,
         result: crate::events::ReviewBaseFetchResult,
@@ -1792,14 +1793,8 @@ impl App {
             .take()
             .expect("checked above");
         if let Err(err) = result.result {
-            tracing::warn!(base = %fetch.base_branch, error = %err, "review-refs fetch failed");
-            self.state.set_home_toast(
-                "fetch failed",
-                format!(
-                    "origin/{} and the PR head may be stale: {err}",
-                    fetch.base_branch
-                ),
-            );
+            tracing::warn!(base = %fetch.base_branch, error = %err, "review fetch/sync incomplete");
+            self.state.set_home_toast("review may be stale", err);
         }
         let ws_idx = self
             .state
@@ -1984,24 +1979,20 @@ impl App {
                         .set_home_toast("review failed", "agent has no branch");
                     return None;
                 };
+                // While reviewing someone else's PR, diff against the PR's base
+                // as GitHub does (`origin/<base>`); the pre-spawn fetch synced
+                // the worktree to `origin/<head>` (see
+                // [`fetch_and_sync_review_worktree`]), so the worktree side
+                // matches the remote PR while staying editable for `CLAUDE:`
+                // notes. Otherwise resolve the usual graphite-parent/
+                // default-branch base.
+                let base = match ws.reviewing_pr_active() {
+                    Some(pr) => format!("origin/{}", pr.base_branch),
+                    None => crate::workspace::review_base(&repo_root, &agent_branch),
+                };
                 let review_cmd = std::env::var("HERDR_REVIEW_CMD")
                     .unwrap_or_else(|_| "vimrev".to_string());
-                // While reviewing someone else's PR, diff the PR exactly as
-                // GitHub shows it — `origin/<head>` against `origin/<base>` —
-                // via the review command's two-ref form, so a stale local
-                // checkout can't skew the review. Otherwise diff the worktree
-                // against the usual graphite-parent/default-branch base.
-                let command_line = match ws.reviewing_pr_active() {
-                    Some(pr) => format!(
-                        "{review_cmd} {} {}",
-                        shell_single_quote(&format!("origin/{}", pr.base_branch)),
-                        shell_single_quote(&format!("origin/{}", pr.head_branch)),
-                    ),
-                    None => {
-                        let base = crate::workspace::review_base(&repo_root, &agent_branch);
-                        format!("{review_cmd} {}", shell_single_quote(&base))
-                    }
-                };
+                let command_line = format!("{review_cmd} {}", shell_single_quote(&base));
                 let shell = crate::pane::pane_shell(&default_shell);
                 Some((vec![shell, "-ic".to_string(), command_line], cwd))
             }
@@ -2059,6 +2050,55 @@ impl App {
 /// Wrap a value in single quotes for safe interpolation into a shell command.
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Freshen a PR review before its row spawns: `git fetch origin <base> <head>`
+/// in `repo_root`, then move the worktree at `checkout_path` (checked out on
+/// the PR's head branch) to `origin/<head>` so the review shows the PR exactly
+/// as it exists on the remote.
+///
+/// The sync is `git reset --hard`, so it only runs when it cannot destroy
+/// anything: a dirty worktree (in-flight `CLAUDE:` notes) or local commits not
+/// on the remote skip it with an explanatory `Err` — the caller still opens
+/// the review row, just against the local state.
+fn fetch_and_sync_review_worktree(
+    repo_root: &std::path::Path,
+    checkout_path: &std::path::Path,
+    base_branch: &str,
+    head_branch: &str,
+) -> Result<(), String> {
+    let git = |cwd: &std::path::Path, args: &[&str]| -> Result<String, String> {
+        match std::process::Command::new("git").current_dir(cwd).args(args).output() {
+            Ok(out) if out.status.success() => {
+                Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            }
+            Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+            Err(err) => Err(format!("git not available: {err}")),
+        }
+    };
+    git(repo_root, &["fetch", "origin", base_branch, head_branch])
+        .map_err(|err| format!("fetch failed — remote refs may be stale: {err}"))?;
+    let origin_head = format!("origin/{head_branch}");
+    let dirty = git(checkout_path, &["status", "--porcelain"])
+        .map_err(|err| format!("worktree status failed — not synced to {origin_head}: {err}"))?;
+    if !dirty.is_empty() {
+        return Err(format!(
+            "worktree has local changes — not synced to {origin_head}"
+        ));
+    }
+    let ahead = git(
+        checkout_path,
+        &["rev-list", "--count", &format!("{origin_head}..HEAD")],
+    )
+    .map_err(|err| format!("worktree state unknown — not synced to {origin_head}: {err}"))?;
+    if ahead != "0" {
+        return Err(format!(
+            "local commits ahead of {origin_head} — not synced"
+        ));
+    }
+    git(checkout_path, &["reset", "--hard", &origin_head])
+        .map_err(|err| format!("sync to {origin_head} failed: {err}"))?;
+    Ok(())
 }
 
 /// Prompt-line markers an agent renders before its input (`>` for Claude Code,
@@ -2255,7 +2295,7 @@ mod review_base_fetch_tests {
     }
 
     #[test]
-    fn review_row_diffs_the_remote_pr_refs_while_reviewing() {
+    fn review_row_diffs_the_worktree_against_the_pr_base_while_reviewing() {
         let mut app = app();
         let mut ws = crate::workspace::Workspace::test_new("main");
         ws.cached_git_branch = Some(pr().head_branch);
@@ -2267,10 +2307,11 @@ mod review_base_fetch_tests {
             .row_spawn_spec(0, crate::pane::PaneRole::Review)
             .expect("review row must spawn");
         let command_line = argv.last().expect("argv has a command line");
-        // origin/<base> then origin/<head> — the review command's
-        // two-ref (parent, tip) form, independent of the local checkout.
+        // Single-ref form against origin/<base>: the worktree side carries
+        // the PR head (the pre-spawn fetch syncs it to origin/<head>) and
+        // stays editable for CLAUDE: notes.
         assert!(
-            command_line.ends_with("'origin/master' 'origin/alice/fix-parser'"),
+            command_line.ends_with("'origin/master'"),
             "unexpected review command: {command_line}"
         );
     }
@@ -2286,12 +2327,105 @@ mod review_base_fetch_tests {
             });
         app.handle_review_base_fetch_finished(crate::events::ReviewBaseFetchResult {
             workspace_id: "gone".into(),
-            result: Err("no network".into()),
+            result: Err("fetch failed — remote refs may be stale: no network".into()),
         });
         assert!(app.state.control.review_base_fetch.is_none());
         let toast = app.state.toast.expect("failure must surface in a toast");
-        assert_eq!(toast.title, "fetch failed");
-        assert!(toast.context.contains("origin/main"));
+        assert_eq!(toast.title, "review may be stale");
+        assert!(toast.context.contains("no network"));
+    }
+
+    fn run_git(cwd: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "git command failed: git -C {} {}",
+            cwd.display(),
+            args.join(" ")
+        );
+    }
+
+    fn rev(repo: &std::path::Path, refname: &str) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["rev-parse", refname])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// An "origin" repo with a `master` base and a `pr-head` branch one commit
+    /// ahead, plus a clone of `pr-head` acting as the review worktree.
+    fn origin_and_clone(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let temp = |suffix: &str| {
+            std::env::temp_dir().join(format!(
+                "herdr-{name}-{suffix}-{}-{nanos}",
+                std::process::id()
+            ))
+        };
+        let origin = temp("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        run_git(&origin, &["init", "--quiet"]);
+        run_git(&origin, &["config", "user.email", "herdr@example.invalid"]);
+        run_git(&origin, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(origin.join("README.md"), "test\n").unwrap();
+        run_git(&origin, &["add", "README.md"]);
+        run_git(&origin, &["commit", "--quiet", "-m", "initial"]);
+        run_git(&origin, &["branch", "-M", "master"]);
+        run_git(&origin, &["checkout", "--quiet", "-b", "pr-head"]);
+        std::fs::write(origin.join("file.txt"), "v1\n").unwrap();
+        run_git(&origin, &["add", "file.txt"]);
+        run_git(&origin, &["commit", "--quiet", "-m", "pr work"]);
+
+        let clone = temp("clone");
+        run_git(
+            &std::env::temp_dir(),
+            &[
+                "clone",
+                "--quiet",
+                "--branch",
+                "pr-head",
+                origin.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        // The PR head moves on the remote after the clone (new push).
+        std::fs::write(origin.join("file.txt"), "v2\n").unwrap();
+        run_git(&origin, &["commit", "--quiet", "-am", "pr update"]);
+        (origin, clone)
+    }
+
+    #[test]
+    fn fetch_and_sync_moves_a_clean_worktree_to_the_remote_head() {
+        let (origin, clone) = origin_and_clone("review-sync-clean");
+        super::fetch_and_sync_review_worktree(&clone, &clone, "master", "pr-head")
+            .expect("clean worktree must sync");
+        assert_eq!(rev(&clone, "HEAD"), rev(&origin, "pr-head"));
+    }
+
+    #[test]
+    fn fetch_and_sync_refuses_to_clobber_local_changes() {
+        let (origin, clone) = origin_and_clone("review-sync-dirty");
+        std::fs::write(clone.join("file.txt"), "CLAUDE: note\n").unwrap();
+        let err = super::fetch_and_sync_review_worktree(&clone, &clone, "master", "pr-head")
+            .expect_err("dirty worktree must not be reset");
+        assert!(err.contains("local changes"), "unexpected error: {err}");
+        // The in-flight note survives, and HEAD stayed where it was.
+        assert_eq!(
+            std::fs::read_to_string(clone.join("file.txt")).unwrap(),
+            "CLAUDE: note\n"
+        );
+        assert_ne!(rev(&clone, "HEAD"), rev(&origin, "pr-head"));
     }
 
     #[test]

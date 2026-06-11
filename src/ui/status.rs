@@ -33,7 +33,7 @@ pub(super) fn render_status_line(app: &AppState, frame: &mut Frame, area: Rect) 
                 Style::default().fg(p.yellow),
             ),
             Span::styled(
-                format!("fetching PR refs (origin/{}…)", fetch.base_branch),
+                format!("syncing PR refs (origin/{}…)", fetch.base_branch),
                 Style::default().fg(p.text).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
