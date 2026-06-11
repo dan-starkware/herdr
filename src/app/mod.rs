@@ -535,7 +535,10 @@ impl App {
         });
 
         Self {
-            config_diagnostic_deadline: None,
+            config_diagnostic_deadline: state
+                .config_diagnostic
+                .is_some()
+                .then(|| Instant::now() + crate::app::runtime::CONFIG_DIAGNOSTIC_TTL),
             toast_deadline: None,
             copy_feedback_deadline: None,
             last_api_notification_at: None,
@@ -929,9 +932,7 @@ impl App {
         self.state.release_notes = None;
         if !preview {
             if let Err(err) = crate::release_notes::mark_current_version_seen() {
-                self.state.config_diagnostic =
-                    Some(format!("failed to update release notes status: {err}"));
-                self.config_diagnostic_deadline = Some(Instant::now() + Duration::from_secs(5));
+                self.show_config_diagnostic(format!("failed to update release notes status: {err}"));
             }
         }
 
@@ -948,9 +949,9 @@ impl App {
                 if let Err(err) =
                     crate::product_announcements::mark_seen(&announcement.version, &announcement.id)
                 {
-                    self.state.config_diagnostic =
-                        Some(format!("failed to update announcement status: {err}"));
-                    self.config_diagnostic_deadline = Some(Instant::now() + Duration::from_secs(5));
+                    self.show_config_diagnostic(format!(
+                        "failed to update announcement status: {err}"
+                    ));
                 }
             }
         }
@@ -1216,7 +1217,11 @@ impl App {
             }
         } else {
             self.state.config_diagnostic = crate::config::config_diagnostic_summary(&diagnostics);
-            self.config_diagnostic_deadline = None;
+            self.config_diagnostic_deadline = self
+                .state
+                .config_diagnostic
+                .is_some()
+                .then(|| Instant::now() + crate::app::runtime::CONFIG_DIAGNOSTIC_TTL);
             if notify_success {
                 self.state.toast = Some(crate::app::state::ToastNotification {
                     kind: crate::app::state::ToastKind::UpdateInstalled,

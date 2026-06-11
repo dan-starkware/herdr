@@ -38,7 +38,17 @@ pub(crate) struct WorkspaceGitRefreshOutput {
     pub(crate) cache_updates: Vec<(std::path::PathBuf, GitStatusCacheEntry)>,
 }
 
+/// How long the config-diagnostic banner stays on screen before auto-dismissing.
+pub(crate) const CONFIG_DIAGNOSTIC_TTL: Duration = Duration::from_secs(5);
+
 impl App {
+    /// Show `message` in the config-diagnostic banner and arm its auto-dismiss
+    /// deadline. Every banner goes through here so none can outlive its TTL.
+    pub(crate) fn show_config_diagnostic(&mut self, message: impl Into<String>) {
+        self.state.config_diagnostic = Some(message.into());
+        self.config_diagnostic_deadline = Some(Instant::now() + CONFIG_DIAGNOSTIC_TTL);
+    }
+
     pub(crate) fn shutdown_detached_terminal_runtimes(&mut self) {
         let terminal_ids = std::mem::take(&mut self.state.terminal_runtime_shutdowns);
         for terminal_id in terminal_ids {
