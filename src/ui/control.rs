@@ -379,13 +379,16 @@ fn render_agents_half(app: &AppState, frame: &mut Frame, area: Rect) {
         return;
     }
 
+    // When the Agents pane is unfocused, the mark tracks the agent shown in
+    // Main instead of the (now-inert) navigable selection.
+    let marked = app.marked_agent_index();
     let mut y = body.y;
     let body_bottom = body.y + body.height;
     for (idx, entry) in entries.iter().enumerate() {
         if y + 1 >= body_bottom {
             break;
         }
-        let selected = idx == app.control.selected_agent;
+        let selected = Some(idx) == marked;
         if selected {
             let bg = if focused { p.surface0 } else { p.surface_dim };
             let buf = frame.buffer_mut();
@@ -446,9 +449,9 @@ fn render_agents_half(app: &AppState, frame: &mut Frame, area: Rect) {
 pub(super) fn render_confirm_kill_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     super::dim_background(frame, area);
     let p = &app.palette;
-    let title = agent_panel_entries_all(app)
-        .get(app.control.selected_agent)
-        .map(|entry| entry.primary_label.clone())
+    let title = app
+        .marked_agent_index()
+        .and_then(|idx| agent_panel_entries_all(app).get(idx).map(|entry| entry.primary_label.clone()))
         .unwrap_or_else(|| "agent".to_string());
 
     let Some(inner) = super::widgets::render_modal_shell(frame, area, 52, 6, p) else {

@@ -431,6 +431,23 @@ impl AppState {
         crate::ui::agent_panel_entries_all(self).len()
     }
 
+    /// The agent-panel index currently "marked" for agent-level commands. When
+    /// the Agents pane has focus this is its navigable selection; otherwise it
+    /// tracks the agent whose workspace fills Main, so the highlight (and the
+    /// alt+x kill) always point at the agent you can actually see.
+    pub(crate) fn marked_agent_index(&self) -> Option<usize> {
+        let entries = crate::ui::agent_panel_entries_all(self);
+        if entries.is_empty() {
+            return None;
+        }
+        if self.control.focus == FocusPane::Agents {
+            return Some(self.control.selected_agent.min(entries.len() - 1));
+        }
+        // Agents pane unfocused: mark the agent shown in Main, if any.
+        let active = self.active?;
+        entries.iter().position(|e| e.ws_idx == active)
+    }
+
     fn home_move_selection(&mut self, delta: isize) {
         match self.control.focus {
             FocusPane::Control => {
@@ -505,8 +522,9 @@ impl AppState {
     }
 
     fn request_home_kill_agent(&mut self) {
-        // Confirm before killing the selected agent.
-        if self.home_agent_count() > 0 {
+        // Confirm before killing the marked agent (the Agents-pane selection, or
+        // the agent shown in Main when that pane is unfocused).
+        if self.marked_agent_index().is_some() {
             self.mode = Mode::ConfirmKill;
         }
     }
@@ -559,7 +577,11 @@ impl AppState {
     /// the home selection back into range.
     fn kill_selected_agent(&mut self) {
         let entries = crate::ui::agent_panel_entries_all(self);
-        let Some(ws_idx) = entries.get(self.control.selected_agent).map(|e| e.ws_idx) else {
+        let Some(ws_idx) = self
+            .marked_agent_index()
+            .and_then(|idx| entries.get(idx))
+            .map(|e| e.ws_idx)
+        else {
             return;
         };
 
