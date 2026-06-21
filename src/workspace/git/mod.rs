@@ -12,8 +12,8 @@ mod test_support;
 pub use self::{
     discovery::{derive_label_from_cwd, git_branch, git_space_metadata, GitSpaceMetadata},
     pr_status::{
-        fetch_pr_status_snapshot, github_owner_name, FetchedPr, PersonPr, PersonPrs, PrBucket,
-        PrKey, PrStatusSnapshot, StackGraph, StackRow,
+        fetch_pr_status_snapshot, github_owner_name, CiState, FetchedPr, PersonPr, PersonPrs,
+        PrBucket, PrKey, PrStatusSnapshot, StackGraph, StackRow,
     },
     prs::{list_prs_for_my_review, pr_by_number, pr_number_for_ref, ReviewPr},
     repos::{

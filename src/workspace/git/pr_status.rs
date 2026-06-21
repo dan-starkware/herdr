@@ -59,6 +59,20 @@ pub struct ReviewSubmission {
     pub author: String,
 }
 
+/// CI status of a PR's latest commit, from its status-check rollup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CiState {
+    /// No checks, or status unknown.
+    #[default]
+    None,
+    /// Checks pending / running.
+    Pending,
+    /// All checks passed.
+    Passing,
+    /// At least one check failed or errored.
+    Failing,
+}
+
 /// A fetched PR with everything classification and stacking need. `is_mine` is
 /// not stored — it is derived from `author == viewer` wherever needed, so the
 /// viewer login only has to be known by aggregation time.
@@ -78,8 +92,8 @@ pub struct FetchedPr {
     pub repo_key: String,
     pub threads: Vec<ReviewThread>,
     pub reviews: Vec<ReviewSubmission>,
-    /// Whether the PR's latest commit has a failing CI status-check rollup.
-    pub ci_failing: bool,
+    /// CI status of the PR's latest commit (status-check rollup).
+    pub ci: CiState,
 }
 
 impl FetchedPr {
@@ -243,7 +257,7 @@ fn aggregate_people(prs: &[FetchedPr], viewer: &str) -> Vec<PersonPrs> {
             PrBucket::Green => entry.green += 1,
             PrBucket::Grey => entry.grey += 1,
         }
-        if pr.ci_failing {
+        if pr.ci == CiState::Failing {
             entry.ci += 1;
         }
         entry.prs.push(PersonPr { pr: pr.clone(), bucket });
@@ -571,7 +585,42 @@ fn run_gh_capped(
 fn fetch_global_prs(
     repo_by_owner_name: &HashMap<String, String>,
 ) -> Result<(String, Vec<FetchedPr>), String> {
-    let query = format!("query={GRAPHQL_QUERY}");
+    // Two-phase to stay cheap on GitHub's GraphQL points budget: phase 1 is a
+    // cheap global search (ids + scalars only) filtered to ~/workspace; phase 2
+    // fetches the expensive detail (reviews/threads/CI) for ONLY those PRs by
+    // node id, so cost scales with the local PR count rather than the ~150 PRs
+    // the global searches surface.
+    let (viewer, refs) = fetch_pr_refs(repo_by_owner_name)?;
+    if refs.is_empty() {
+        return Ok((viewer, Vec::new()));
+    }
+    let details = fetch_pr_details(&refs)?;
+    let prs = refs
+        .into_iter()
+        .zip(details)
+        .map(|(pr_ref, detail)| FetchedPr {
+            number: pr_ref.number,
+            title: pr_ref.title,
+            url: pr_ref.url,
+            author: pr_ref.author,
+            is_draft: pr_ref.is_draft,
+            base_ref: pr_ref.base_ref,
+            head_ref: pr_ref.head_ref,
+            repo_key: pr_ref.repo_key,
+            threads: detail.threads,
+            reviews: detail.reviews,
+            ci: detail.ci,
+        })
+        .collect();
+    Ok((viewer, prs))
+}
+
+/// Phase 1: three global searches returning only ids + scalar fields (cheap),
+/// filtered to the scanned repos. Returns `(viewer_login, refs)`.
+fn fetch_pr_refs(
+    repo_by_owner_name: &HashMap<String, String>,
+) -> Result<(String, Vec<PrRef>), String> {
+    let query = format!("query={REF_QUERY}");
     let mine = "mineQuery=is:pr is:open author:@me sort:updated-desc".to_string();
     let requested =
         "requestedQuery=is:pr is:open review-requested:@me sort:updated-desc".to_string();
@@ -581,7 +630,129 @@ fn fetch_global_prs(
         &["api", "graphql", "-f", &query, "-f", &mine, "-f", &requested, "-f", &reviewed],
         PR_FETCH_TIMEOUT,
     )?;
-    parse_global_response(&stdout, repo_by_owner_name)
+    let data: RefData = extract_data(&stdout)?;
+    let viewer = data.viewer.login.clone();
+    Ok((viewer, select_local_refs(data, repo_by_owner_name)))
+}
+
+/// Phase 2: fetch reviews/threads/CI for exactly `refs` by node id, in chunks of
+/// 100 (`nodes(ids:)` preserves input order). Returns one [`PrDetail`] per ref.
+fn fetch_pr_details(refs: &[PrRef]) -> Result<Vec<PrDetail>, String> {
+    let mut details: Vec<PrDetail> = Vec::with_capacity(refs.len());
+    for chunk in refs.chunks(100) {
+        let ids = chunk
+            .iter()
+            .map(|pr_ref| format!("\"{}\"", pr_ref.id))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut query = String::from("query=query { nodes(ids: [");
+        query.push_str(&ids);
+        query.push_str("]) { ... on PullRequest { ");
+        query.push_str(DETAIL_FIELDS);
+        query.push_str(" } } }");
+        let stdout = run_gh_capped(None, &["api", "graphql", "-f", &query], PR_FETCH_TIMEOUT)?;
+        let data: DetailData = extract_data(&stdout)?;
+        let mut got = 0;
+        for node in data.nodes {
+            details.push(node.map(detail_from_raw).unwrap_or_default());
+            got += 1;
+        }
+        // Defensive: keep `details` aligned 1:1 with `refs` even if gh returns
+        // fewer nodes than ids requested.
+        while got < chunk.len() {
+            details.push(PrDetail::default());
+            got += 1;
+        }
+    }
+    Ok(details)
+}
+
+/// Parse a GraphQL envelope, using `data` even when partial `errors` are present
+/// (GitHub returns both, e.g. when one field times out); fail only when there is
+/// no data at all — discarding good data on a partial error spuriously "fails".
+fn extract_data<T: serde::de::DeserializeOwned>(stdout: &[u8]) -> Result<T, String> {
+    let envelope: GraphqlEnvelope<T> =
+        serde_json::from_slice(stdout).map_err(|err| format!("unexpected gh output: {err}"))?;
+    match envelope.data {
+        Some(data) => Ok(data),
+        None => Err(envelope
+            .errors
+            .map(|errors| {
+                errors
+                    .into_iter()
+                    .map(|e| e.message)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| "no data in gh response".to_string())),
+    }
+}
+
+fn detail_from_raw(node: RawDetailNode) -> PrDetail {
+    let threads = node
+        .review_threads
+        .nodes
+        .into_iter()
+        .map(|thread| ReviewThread {
+            is_resolved: thread.is_resolved,
+            last_comment_author: thread
+                .comments
+                .nodes
+                .into_iter()
+                .last()
+                .and_then(|comment| comment.author)
+                .map(|author| author.login),
+        })
+        .collect();
+    let reviews = node
+        .reviews
+        .nodes
+        .into_iter()
+        .map(|review| ReviewSubmission {
+            state: review.state,
+            author: review.author.map(|a| a.login).unwrap_or_default(),
+        })
+        .collect();
+    let ci = node
+        .commits
+        .nodes
+        .into_iter()
+        .last()
+        .and_then(|n| n.commit.status_check_rollup)
+        .map(|rollup| match rollup.state.as_str() {
+            "SUCCESS" => CiState::Passing,
+            "FAILURE" | "ERROR" => CiState::Failing,
+            "PENDING" | "EXPECTED" => CiState::Pending,
+            _ => CiState::None,
+        })
+        .unwrap_or(CiState::None);
+    PrDetail {
+        threads,
+        reviews,
+        ci,
+    }
+}
+
+/// A PR from phase 1: identity + scalar fields, before detail is fetched.
+struct PrRef {
+    id: String,
+    number: u64,
+    title: String,
+    url: String,
+    author: String,
+    is_draft: bool,
+    base_ref: String,
+    head_ref: String,
+    repo_key: String,
+}
+
+/// Per-PR detail from phase 2.
+#[derive(Default)]
+struct PrDetail {
+    threads: Vec<ReviewThread>,
+    reviews: Vec<ReviewSubmission>,
+    ci: CiState,
 }
 
 /// Look up (and process-cache) the current GitHub user's login. Stable for the
@@ -607,16 +778,18 @@ fn run_gh_viewer_login() -> Option<String> {
     (!login.is_empty()).then_some(login)
 }
 
-const GRAPHQL_QUERY: &str = "\
+/// Phase-1 query: cheap global searches returning only ids + scalar fields.
+const REF_QUERY: &str = "\
 query($mineQuery: String!, $requestedQuery: String!, $reviewedQuery: String!) {
   viewer { login }
-  mine: search(type: ISSUE, first: 50, query: $mineQuery) { ...prFields }
-  requested: search(type: ISSUE, first: 50, query: $requestedQuery) { ...prFields }
-  reviewedBy: search(type: ISSUE, first: 50, query: $reviewedQuery) { ...prFields }
+  mine: search(type: ISSUE, first: 50, query: $mineQuery) { ...prRef }
+  requested: search(type: ISSUE, first: 50, query: $requestedQuery) { ...prRef }
+  reviewedBy: search(type: ISSUE, first: 50, query: $reviewedQuery) { ...prRef }
 }
-fragment prFields on SearchResultItemConnection {
+fragment prRef on SearchResultItemConnection {
   nodes {
     ... on PullRequest {
+      id
       number
       title
       url
@@ -625,45 +798,20 @@ fragment prFields on SearchResultItemConnection {
       headRefName
       author { login }
       repository { nameWithOwner }
-      reviews(last: 50) { nodes { state author { login } } }
-      reviewThreads(first: 50) {
-        nodes { isResolved comments(last: 1) { nodes { author { login } } } }
-      }
-      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
     }
   }
 }";
 
-fn parse_global_response(
-    stdout: &[u8],
-    repo_by_owner_name: &HashMap<String, String>,
-) -> Result<(String, Vec<FetchedPr>), String> {
-    let envelope: GraphqlEnvelope =
-        serde_json::from_slice(stdout).map_err(|err| format!("unexpected gh output: {err}"))?;
-    // GitHub GraphQL often returns partial `errors` ALONGSIDE valid `data`
-    // (e.g. one PR's field timed out). Use the data whenever it's present; only
-    // treat the call as failed when there's no data at all — discarding good
-    // data on a partial error is what made refreshes spuriously "fail".
-    let data = match envelope.data {
-        Some(data) => data,
-        None => {
-            let message = envelope
-                .errors
-                .map(|errors| {
-                    errors
-                        .into_iter()
-                        .map(|e| e.message)
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                })
-                .filter(|message| !message.is_empty())
-                .unwrap_or_else(|| "no data in gh response".to_string());
-            return Err(message);
-        }
-    };
-    let viewer = data.viewer.login;
+/// Phase-2 detail fields, fetched per PR by node id (the expensive part).
+const DETAIL_FIELDS: &str = "reviews(last: 50) { nodes { state author { login } } } \
+reviewThreads(first: 50) { nodes { isResolved comments(last: 1) { nodes { author { login } } } } } \
+commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }";
 
-    let mut prs = Vec::new();
+/// Turn phase-1 search results into `PrRef`s, keeping only PRs in a scanned
+/// ~/workspace repo (case-insensitive owner/name match) and deduping the PRs
+/// that appear in more than one search.
+fn select_local_refs(data: RefData, repo_by_owner_name: &HashMap<String, String>) -> Vec<PrRef> {
+    let mut refs = Vec::new();
     let mut seen: HashSet<PrKey> = HashSet::new();
     for node in data
         .mine
@@ -672,29 +820,38 @@ fn parse_global_response(
         .chain(data.requested.nodes)
         .chain(data.reviewed_by.nodes)
     {
-        if node.number == 0 {
+        if node.number == 0 || node.id.is_empty() {
             continue; // empty (non-PR) node
         }
-        // Keep only PRs in a scanned ~/workspace repo, mapping to its repo key.
         let Some(repo_key) = repo_by_owner_name
             .get(&node.repository.name_with_owner.to_lowercase())
             .cloned()
         else {
-            continue;
+            continue; // not a ~/workspace repo
         };
         if !seen.insert((repo_key.clone(), node.number)) {
             continue; // already taken from another search
         }
-        prs.push(node.into_fetched(&repo_key));
+        refs.push(PrRef {
+            id: node.id,
+            number: node.number,
+            title: node.title,
+            url: node.url,
+            author: node.author.map(|a| a.login).unwrap_or_else(|| "ghost".to_string()),
+            is_draft: node.is_draft,
+            base_ref: node.base_ref_name,
+            head_ref: node.head_ref_name,
+            repo_key,
+        });
     }
-    Ok((viewer, prs))
+    refs
 }
 
 // --- Raw GraphQL response shapes -------------------------------------------
 
 #[derive(Deserialize)]
-struct GraphqlEnvelope {
-    data: Option<GraphqlData>,
+struct GraphqlEnvelope<T> {
+    data: Option<T>,
     errors: Option<Vec<GraphqlError>>,
 }
 
@@ -703,15 +860,16 @@ struct GraphqlError {
     message: String,
 }
 
+/// Phase-1 response: viewer + the three aliased searches of PR refs.
 #[derive(Deserialize)]
-struct GraphqlData {
+struct RefData {
     viewer: RawViewer,
     #[serde(default)]
-    mine: RawSearch,
+    mine: RawRefSearch,
     #[serde(default)]
-    requested: RawSearch,
+    requested: RawRefSearch,
     #[serde(rename = "reviewedBy", default)]
-    reviewed_by: RawSearch,
+    reviewed_by: RawRefSearch,
 }
 
 #[derive(Deserialize)]
@@ -720,16 +878,17 @@ struct RawViewer {
 }
 
 #[derive(Deserialize, Default)]
-struct RawSearch {
+struct RawRefSearch {
     #[serde(default)]
-    nodes: Vec<RawNode>,
+    nodes: Vec<RawRefNode>,
 }
 
-/// One search node. `#[serde(default)]` tolerates the empty `{}` a non-PR result
-/// would yield (filtered out later by `number == 0`).
+/// One phase-1 search node (ids + scalars). `#[serde(default)]` tolerates the
+/// empty `{}` a non-PR result yields (filtered out later by `number == 0`).
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
-struct RawNode {
+struct RawRefNode {
+    id: String,
     number: u64,
     title: String,
     url: String,
@@ -738,9 +897,6 @@ struct RawNode {
     head_ref_name: String,
     author: Option<RawLogin>,
     repository: RawRepo,
-    reviews: RawReviews,
-    review_threads: RawThreads,
-    commits: RawCommits,
 }
 
 #[derive(Deserialize, Default)]
@@ -749,54 +905,20 @@ struct RawRepo {
     name_with_owner: String,
 }
 
-impl RawNode {
-    fn into_fetched(self, repo_key: &str) -> FetchedPr {
-        let threads = self
-            .review_threads
-            .nodes
-            .into_iter()
-            .map(|thread| ReviewThread {
-                is_resolved: thread.is_resolved,
-                last_comment_author: thread
-                    .comments
-                    .nodes
-                    .into_iter()
-                    .last()
-                    .and_then(|comment| comment.author)
-                    .map(|author| author.login),
-            })
-            .collect();
-        let reviews = self
-            .reviews
-            .nodes
-            .into_iter()
-            .map(|review| ReviewSubmission {
-                state: review.state,
-                author: review.author.map(|a| a.login).unwrap_or_default(),
-            })
-            .collect();
-        let ci_failing = self
-            .commits
-            .nodes
-            .into_iter()
-            .last()
-            .and_then(|node| node.commit.status_check_rollup)
-            .map(|rollup| rollup.state == "FAILURE" || rollup.state == "ERROR")
-            .unwrap_or(false);
-        FetchedPr {
-            number: self.number,
-            title: self.title,
-            url: self.url,
-            author: self.author.map(|a| a.login).unwrap_or_else(|| "ghost".to_string()),
-            is_draft: self.is_draft,
-            base_ref: self.base_ref_name,
-            head_ref: self.head_ref_name,
-            repo_key: repo_key.to_string(),
-            threads,
-            reviews,
-            ci_failing,
-        }
-    }
+/// Phase-2 response: detail nodes in the same order as the requested ids
+/// (`null` for any id that wasn't a PR).
+#[derive(Deserialize)]
+struct DetailData {
+    #[serde(default)]
+    nodes: Vec<Option<RawDetailNode>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct RawDetailNode {
+    reviews: RawReviews,
+    review_threads: RawThreads,
+    commits: RawCommits,
 }
 
 #[derive(Deserialize, Default)]
@@ -883,7 +1005,7 @@ mod tests {
             repo_key: "acme/proj".to_string(),
             threads: Vec::new(),
             reviews: Vec::new(),
-            ci_failing: false,
+            ci: CiState::None,
         }
     }
 
@@ -1031,39 +1153,52 @@ mod tests {
     }
 
     #[test]
-    fn parse_global_response_filters_to_local_repos_unions_and_dedups() {
-        // PR #1 (acme/proj) is local; #2 appears in two searches; #9 is in a
-        // repo NOT in ~/workspace and must be dropped.
+    fn select_local_refs_filters_to_local_repos_unions_and_dedups() {
+        // Phase 1: PR #1 (acme/proj) is local; #2 appears in two searches; #9 is
+        // in a repo NOT in ~/workspace and must be dropped.
         let raw = br#"{"data":{
             "viewer":{"login":"me"},
-            "mine":{"nodes":[{"number":1,"title":"mine","url":"u","isDraft":false,
+            "mine":{"nodes":[{"id":"PR_1","number":1,"title":"mine","url":"u","isDraft":false,
                 "baseRefName":"main","headRefName":"me/x","author":{"login":"me"},
-                "repository":{"nameWithOwner":"acme/proj"},
-                "reviews":{"nodes":[]},"reviewThreads":{"nodes":[]}}]},
+                "repository":{"nameWithOwner":"acme/proj"}}]},
             "requested":{"nodes":[
-                {"number":2,"title":"rev","url":"u","isDraft":false,
+                {"id":"PR_2","number":2,"title":"rev","url":"u","isDraft":false,
                  "baseRefName":"main","headRefName":"a/x","author":{"login":"alice"},
-                 "repository":{"nameWithOwner":"Acme/Proj"},
-                 "reviews":{"nodes":[]},
-                 "reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"alice"}}]}}]}},
-                {"number":9,"title":"foreign","url":"u","isDraft":false,
+                 "repository":{"nameWithOwner":"Acme/Proj"}},
+                {"id":"PR_9","number":9,"title":"foreign","url":"u","isDraft":false,
                  "baseRefName":"main","headRefName":"x","author":{"login":"bob"},
-                 "repository":{"nameWithOwner":"other/repo"},
-                 "reviews":{"nodes":[]},"reviewThreads":{"nodes":[]}}]},
-            "reviewedBy":{"nodes":[{"number":2,"title":"rev","url":"u","isDraft":false,
+                 "repository":{"nameWithOwner":"other/repo"}}]},
+            "reviewedBy":{"nodes":[{"id":"PR_2","number":2,"title":"rev","url":"u","isDraft":false,
                 "baseRefName":"main","headRefName":"a/x","author":{"login":"alice"},
-                "repository":{"nameWithOwner":"acme/proj"},
-                "reviews":{"nodes":[]},"reviewThreads":{"nodes":[]}}]}
+                "repository":{"nameWithOwner":"acme/proj"}}]}
         }}"#;
+        let data: RefData = extract_data(raw).unwrap();
+        assert_eq!(data.viewer.login, "me");
         let map: HashMap<String, String> =
             [("acme/proj".to_string(), "acme/proj".to_string())].into_iter().collect();
-        let (viewer, prs) = parse_global_response(raw, &map).unwrap();
-        assert_eq!(viewer, "me");
+        let refs = select_local_refs(data, &map);
         // #1 and #2 kept (case-insensitive owner match), #2 deduped, #9 dropped.
-        assert_eq!(prs.len(), 2, "local PRs only, deduped; foreign repo dropped");
-        let pr2 = prs.iter().find(|p| p.number == 2).unwrap();
+        assert_eq!(refs.len(), 2, "local PRs only, deduped; foreign repo dropped");
+        let pr2 = refs.iter().find(|r| r.number == 2).unwrap();
         assert_eq!(pr2.repo_key, "acme/proj");
-        assert_eq!(pr2.threads.len(), 1);
-        assert_eq!(pr2.threads[0].last_comment_author.as_deref(), Some("alice"));
+        assert_eq!(pr2.id, "PR_2");
+    }
+
+    #[test]
+    fn detail_from_raw_extracts_threads_reviews_and_ci() {
+        // Phase 2: per-PR detail parsing (last-replier, review state, CI rollup).
+        let node: RawDetailNode = serde_json::from_str(
+            r#"{
+                "reviews":{"nodes":[{"state":"APPROVED","author":{"login":"alice"}}]},
+                "reviewThreads":{"nodes":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"bob"}}]}}]},
+                "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]}
+            }"#,
+        )
+        .unwrap();
+        let detail = detail_from_raw(node);
+        assert_eq!(detail.reviews.len(), 1);
+        assert_eq!(detail.threads.len(), 1);
+        assert_eq!(detail.threads[0].last_comment_author.as_deref(), Some("bob"));
+        assert_eq!(detail.ci, CiState::Failing);
     }
 }

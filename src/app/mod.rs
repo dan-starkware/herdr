@@ -34,9 +34,10 @@ pub(crate) const HEADLESS_ANIMATION_TICK_STEP: u32 = 8;
 pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
-/// How often to refresh the PR pane's per-person review-status snapshot (one
-/// `gh api graphql` call per repo). 30s per the user.
-const PR_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+/// How often to auto-refresh the PR pane's per-person review-status snapshot.
+/// 5 minutes keeps the two-phase `gh api graphql` cost trivial against GitHub's
+/// budget; `r` in the PR pane forces an immediate refresh.
+const PR_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);

@@ -182,6 +182,11 @@ impl App {
             }
             return false;
         }
+        // `r` forces an immediate refresh from either view.
+        if event.code == KeyCode::Char('r') && plain {
+            self.force_pr_status_refresh();
+            return true;
+        }
         match &self.state.control.pr_view {
             PrPaneView::People => match event.code {
                 KeyCode::Up => self.state.pr_people_move(-1),

@@ -534,6 +534,17 @@ impl App {
             .then_some(self.last_pr_status_refresh + PR_STATUS_REFRESH_INTERVAL)
     }
 
+    /// Force an immediate PR-status refresh (the PR pane's `r`). No-op while a
+    /// fetch is already in flight — that one will deliver fresh data.
+    pub(crate) fn force_pr_status_refresh(&mut self) {
+        if self.pr_status_refresh_in_flight {
+            return;
+        }
+        let now = Instant::now();
+        self.last_pr_status_refresh = now.checked_sub(PR_STATUS_REFRESH_INTERVAL).unwrap_or(now);
+        self.start_pr_status_refresh_if_due(now);
+    }
+
     pub(crate) fn next_loop_deadline(&self, now: Instant, needs_render: bool) -> Option<Instant> {
         self.next_loop_deadline_with_resize_poll(now, needs_render, true, true)
     }

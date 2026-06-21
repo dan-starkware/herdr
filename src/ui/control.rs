@@ -13,7 +13,7 @@ use ratatui::{
 use crate::app::state::{AgentsPaneView, CreateFormRow, FocusPane, Mode, PrPaneView};
 use crate::app::AppState;
 use crate::terminal::TerminalRuntimeRegistry;
-use crate::workspace::PrBucket;
+use crate::workspace::CiState;
 
 use super::sidebar::{agent_panel_entries_all, expanded_sidebar_sections};
 use super::status::{agent_icon, state_label, state_label_color};
@@ -100,15 +100,6 @@ fn render_pr_pane(app: &AppState, frame: &mut Frame, area: Rect) {
     match &app.control.pr_view {
         PrPaneView::People => render_pr_people(app, frame, area, focused),
         PrPaneView::Person { login } => render_pr_person(app, frame, area, focused, login),
-    }
-}
-
-/// Bucket colour: RED = waiting for me, GREEN = lgtm'd, GREY = on the other side.
-fn bucket_color(bucket: PrBucket, p: &crate::app::state::Palette) -> ratatui::style::Color {
-    match bucket {
-        PrBucket::Red => p.red,
-        PrBucket::Green => p.green,
-        PrBucket::Grey => p.overlay0,
     }
 }
 
@@ -251,7 +242,7 @@ fn render_pr_people(app: &AppState, frame: &mut Frame, area: Rect, focused: bool
     }
 
     if reserve_footer {
-        render_pr_footer(app, frame, area, " ↵ person · p pr#");
+        render_pr_footer(app, frame, area, " ↵ person · p pr# · r refresh");
     }
 }
 
@@ -298,7 +289,7 @@ fn render_pr_person(app: &AppState, frame: &mut Frame, area: Rect, focused: bool
             Rect::new(body.x, body.y, body.width, 1),
         );
         if focused && body.height >= 2 {
-            render_pr_footer(app, frame, area, " l green · o grey · q back");
+            render_pr_footer(app, frame, area, " l green · o grey · r refresh · q back");
         }
         return;
     }
@@ -382,12 +373,12 @@ fn render_pr_person(app: &AppState, frame: &mut Frame, area: Rect, focused: bool
                 } else {
                     Style::default().fg(p.subtext0)
                 };
-                // CI failure paints the number yellow (independent of bucket);
-                // otherwise it takes the bucket colour (red/green/grey).
-                let number_color = if pr.ci_failing {
-                    p.yellow
-                } else {
-                    bucket_color(person_pr.bucket, p)
+                // The number reflects CI status (independent of the red/green/
+                // grey bucket): failing -> yellow, passing -> green, else purple.
+                let number_color = match pr.ci {
+                    CiState::Failing => p.yellow,
+                    CiState::Passing => p.green,
+                    _ => p.mauve,
                 };
                 let title_avail = (body.width as usize)
                     .saturating_sub(prefix.chars().count() + 1 + number.chars().count() + 1);
@@ -412,7 +403,7 @@ fn render_pr_person(app: &AppState, frame: &mut Frame, area: Rect, focused: bool
     }
 
     if reserve_footer {
-        render_pr_footer(app, frame, area, " l green · o grey · ↵ review · p pr# · q back");
+        render_pr_footer(app, frame, area, " l green · o grey · ↵ review · p pr# · r refresh · q back");
     }
 }
 
