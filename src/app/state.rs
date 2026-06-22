@@ -1704,14 +1704,14 @@ impl AppState {
     }
 
     /// While the branch picker ([`Mode::Review`]) is open, decide whether a key
-    /// is the picker's own. The picker lives in the PR-pane (top-left) half, so
+    /// is the picker's own. The picker lives in the Agents (bottom-left) half, so
     /// it owns keys only while that half is focused — and never the focus-nav chord
-    /// alt+h/j/k/l, which moves pane focus (possibly to Main/Agents) so you can
-    /// step away to read the diff and back without closing the picker. Anything
-    /// the picker doesn't own flows through the home key handler instead.
+    /// alt+h/j/k/l, which moves pane focus away (and so closes the picker, since
+    /// leaving the Agents pane abandons the create flow). Anything the picker
+    /// doesn't own flows through the home key handler instead.
     pub(crate) fn review_picker_owns_key(&self, key: crossterm::event::KeyEvent) -> bool {
         use crossterm::event::{KeyCode, KeyModifiers};
-        if self.control.focus != FocusPane::Prs {
+        if self.control.focus != FocusPane::Agents {
             return false;
         }
         let is_focus_nav = key.modifiers.contains(KeyModifiers::ALT)

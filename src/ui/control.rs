@@ -31,20 +31,20 @@ pub(super) fn render_home_sidebar(
     let (top_area, agents_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
 
     // Each half is framed in a focus box: a THICK accent border when it holds
-    // focus, a plain dim border otherwise. The top-left half shows the PR pane,
-    // or the create-agent branch picker while in Mode::Review (which shares the
-    // PR-pane focus slot).
+    // focus, a plain dim border otherwise. The top-left half always shows the PR
+    // pane; the bottom-left half shows the running agents, or — while creating an
+    // agent (Mode::Review) — the branch picker that lives in the Agents pane.
     let top_inner =
         render_home_pane_box(app, frame, top_area, app.control.focus == FocusPane::Prs);
-    if app.mode == Mode::Review {
-        render_review_half(app, frame, top_inner);
-    } else {
-        render_pr_pane(app, frame, top_inner);
-    }
+    render_pr_pane(app, frame, top_inner);
 
     let agents_inner =
         render_home_pane_box(app, frame, agents_area, app.control.focus == FocusPane::Agents);
-    render_agents_half(app, frame, agents_inner);
+    if app.mode == Mode::Review {
+        render_review_half(app, frame, agents_inner);
+    } else {
+        render_agents_half(app, frame, agents_inner);
+    }
 }
 
 /// Draw a focus box around a home sidebar half and return its inner rect.
@@ -441,7 +441,8 @@ fn render_pr_footer(app: &AppState, frame: &mut Frame, area: Rect, hints: &str) 
     );
 }
 
-/// Top half while reviewing: a branch picker for the repository under review.
+/// The Agents-pane branch picker shown while creating an agent (Mode::Review):
+/// a Graphite branch list for the repository picked in the repo view.
 fn render_review_half(app: &AppState, frame: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;

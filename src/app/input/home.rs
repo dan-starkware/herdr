@@ -491,13 +491,21 @@ impl AppState {
     }
 
     fn set_home_focus(&mut self, focus: FocusPane) {
-        // Leaving the Agents pane collapses its repo picker back to the list
-        // (req 1: focus out of the repos view returns to the agents list).
-        if focus != FocusPane::Agents
-            && self.control.focus == FocusPane::Agents
-            && self.control.agents_view == AgentsPaneView::Repos
-        {
-            self.control.agents_view = AgentsPaneView::Agents;
+        // Leaving the Agents pane abandons an in-progress "create new agent" flow
+        // — the repo picker (`n`) and the branch picker (Mode::Review) both
+        // collapse back to the agents list, which then highlights the agent shown
+        // in Main (so you land back on what you can actually see).
+        if focus != FocusPane::Agents && self.control.focus == FocusPane::Agents {
+            let creating = self.control.agents_view == AgentsPaneView::Repos
+                || self.mode == Mode::Review;
+            if creating {
+                self.control.agents_view = AgentsPaneView::Agents;
+                if self.mode == Mode::Review {
+                    self.mode = Mode::Home;
+                    self.control.review = None;
+                }
+                self.sync_selected_agent_to_main();
+            }
         }
         // Leaving the PR pane returns it to the people list (it goes back to the
         // persons display when it becomes inactive).
@@ -632,6 +640,17 @@ impl AppState {
         self.home_focus_selected_agent_workspace();
     }
 
+    /// Point the agents-pane selection at the agent whose workspace fills Main,
+    /// so the highlight lands on the visible agent when the create flow collapses
+    /// back to the agents list.
+    fn sync_selected_agent_to_main(&mut self) {
+        let Some(active) = self.active else { return };
+        let entries = crate::ui::agent_panel_entries_all(self);
+        if let Some(idx) = entries.iter().position(|entry| entry.ws_idx == active) {
+            self.control.selected_agent = idx;
+        }
+    }
+
     /// Make the selected agent's workspace active so its pane fills Main.
     fn home_focus_selected_agent_workspace(&mut self) {
         let entries = crate::ui::agent_panel_entries_all(self);
@@ -741,9 +760,10 @@ impl AppState {
             let branches = crate::workspace::list_review_branches(&repo.root);
             self.control.review = Some(ReviewState::new(repo, branches));
             self.mode = Mode::Review;
-            // The picker renders in the top-left (PR-pane slot); focus it so it
-            // owns keys. agents_view stays Repos so Esc returns to the picker.
-            self.control.focus = FocusPane::Prs;
+            // The picker renders in the Agents pane (where the repo picker is), so
+            // keep focus there — it owns the picker's keys. agents_view stays Repos
+            // so Esc steps back to the repo picker.
+            self.control.focus = FocusPane::Agents;
         }
     }
 
@@ -983,6 +1003,21 @@ mod tests {
         assert!(state.apply_home_key(alt('k')));
         assert_eq!(state.control.focus, FocusPane::Prs);
         assert_eq!(state.control.agents_view, AgentsPaneView::Agents);
+    }
+
+    #[test]
+    fn leaving_agents_pane_closes_branch_picker_and_returns_to_agents_list() {
+        let mut app = app_with_picker(0);
+        // The branch picker is open in the Agents pane.
+        assert_eq!(app.state.mode, Mode::Review);
+        assert_eq!(app.state.control.focus, FocusPane::Agents);
+        // Focusing another pane abandons the create flow: the picker closes and
+        // the Agents pane drops back to its agents list.
+        assert!(app.state.apply_home_key(alt('k')));
+        assert_eq!(app.state.control.focus, FocusPane::Prs);
+        assert_eq!(app.state.mode, Mode::Home);
+        assert!(app.state.control.review.is_none());
+        assert_eq!(app.state.control.agents_view, AgentsPaneView::Agents);
     }
 
     #[test]
@@ -1239,6 +1274,8 @@ mod tests {
     fn app_with_picker(selected: usize) -> App {
         let mut app = app_for_mouse_test();
         app.state.mode = Mode::Review;
+        // The picker lives in the Agents pane and owns keys while it is focused.
+        app.state.control.focus = FocusPane::Agents;
         app.state.control.review = Some(ReviewState {
             repo: crate::workspace::Repository {
                 key: "a".into(),
@@ -1400,15 +1437,15 @@ mod tests {
     fn review_picker_owns_only_its_own_keys() {
         let mut app = app_with_picker(0);
         let ev = |code, mods| KeyEvent::new(code, mods);
-        // Focused on the Control half: plain picker keys belong to the picker...
+        // Focused on the Agents half: plain picker keys belong to the picker...
         assert!(app
             .state
             .review_picker_owns_key(ev(KeyCode::Char('c'), KeyModifiers::empty())));
         assert!(app
             .state
             .review_picker_owns_key(ev(KeyCode::Char('j'), KeyModifiers::empty())));
-        // ...but the focus-nav chord alt+h/j/k/l flows to the home handler so the
-        // picker can yield focus to Main/Agents without closing.
+        // ...but the focus-nav chord alt+h/j/k/l flows to the home handler, which
+        // moves focus away and closes the picker (leaving Agents abandons it).
         for c in ['h', 'j', 'k', 'l'] {
             assert!(!app
                 .state
