@@ -13,6 +13,7 @@ mod navigator;
 mod onboarding;
 mod panes;
 mod release_notes;
+mod repo_chooser;
 mod scrollbar;
 mod settings;
 mod sidebar;
@@ -44,6 +45,7 @@ pub(crate) use self::release_notes::{
     RELEASE_NOTES_MODAL_SIZE,
 };
 use self::release_notes::{render_product_announcement_overlay, render_release_notes_overlay};
+use self::repo_chooser::render_repo_chooser_overlay;
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
     scrollbar_offset_from_row, scrollbar_thumb_grab_offset, should_show_scrollbar,
@@ -424,6 +426,7 @@ pub fn render_with_runtime_registry(
         Mode::GlobalMenu => render_global_launcher_menu(app, frame),
         Mode::KeybindHelp => render_keybind_help_overlay(app, frame),
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),
+        Mode::RepoChooser => render_repo_chooser_overlay(app, frame),
         Mode::Terminal => {}
     }
 }

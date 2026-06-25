@@ -106,6 +106,7 @@ impl App {
                 Mode::Navigator => {
                     handle_navigator_key(&mut self.state, &self.terminal_runtimes, key_event)
                 }
+                Mode::RepoChooser => self.handle_repo_chooser_key(key_event),
                 Mode::Terminal => unreachable!(),
             },
         }
@@ -464,6 +465,7 @@ pub(crate) fn modal_paste_target_active(state: &AppState) -> bool {
             .as_ref()
             .is_some_and(|open| open.search_focused),
         Mode::Navigator => state.navigator.search_focused,
+        Mode::RepoChooser => true,
         _ => false,
     }
 }

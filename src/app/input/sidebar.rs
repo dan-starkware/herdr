@@ -197,7 +197,7 @@ impl AppState {
     }
 
     pub(crate) fn global_menu_labels(&self) -> Vec<&'static str> {
-        let mut labels = vec!["settings", "keybinds", "reload config"];
+        let mut labels = vec!["open repo", "settings", "keybinds", "reload config"];
         if self.update_available.is_some() {
             labels.push("update ready");
         } else if self.latest_release_notes_available {
@@ -545,10 +545,30 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 2,
+            menu.y + 3,
         ));
 
         assert_eq!(app.state.mode, Mode::KeybindHelp);
+    }
+
+    #[test]
+    fn clicking_open_repo_menu_item_opens_chooser() {
+        let mut app = app_for_mouse_test();
+        let launcher = app.state.global_launcher_rect();
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            launcher.x,
+            launcher.y,
+        ));
+
+        let menu = app.state.global_menu_rect();
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            menu.x + 2,
+            menu.y + 1,
+        ));
+
+        assert_eq!(app.state.mode, Mode::RepoChooser);
     }
 
     #[test]
@@ -565,7 +585,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 1,
+            menu.y + 2,
         ));
 
         assert_eq!(app.state.mode, Mode::Settings);
@@ -585,7 +605,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 3,
+            menu.y + 4,
         ));
 
         assert!(app.state.request_reload_config);
@@ -608,6 +628,7 @@ mod tests {
         assert_eq!(
             app.state.global_menu_labels(),
             vec![
+                "open repo",
                 "settings",
                 "keybinds",
                 "reload config",
@@ -632,14 +653,20 @@ mod tests {
 
         assert_eq!(
             app.state.global_menu_labels(),
-            vec!["settings", "keybinds", "reload config", "detach"]
+            vec![
+                "open repo",
+                "settings",
+                "keybinds",
+                "reload config",
+                "detach"
+            ]
         );
 
         let menu = app.state.global_menu_rect();
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 4,
+            menu.y + 5,
         ));
 
         assert!(app.state.detach_requested);
@@ -655,6 +682,7 @@ mod tests {
         assert_eq!(
             app.state.global_menu_labels(),
             vec![
+                "open repo",
                 "settings",
                 "keybinds",
                 "reload config",

@@ -69,6 +69,7 @@ pub(super) fn modal_action_from_buttons<A: Copy>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GlobalMenuAction {
+    OpenRepo,
     Detach,
     WhatsNew,
     Keybinds,
@@ -78,6 +79,7 @@ pub(crate) enum GlobalMenuAction {
 
 pub(super) fn global_menu_actions(state: &AppState) -> Vec<GlobalMenuAction> {
     let mut actions = vec![
+        GlobalMenuAction::OpenRepo,
         GlobalMenuAction::Settings,
         GlobalMenuAction::Keybinds,
         GlobalMenuAction::ReloadConfig,
@@ -123,6 +125,7 @@ pub(super) fn request_detach(state: &mut AppState) {
 
 pub(super) fn apply_global_menu_action(state: &mut AppState, action: GlobalMenuAction) {
     match action {
+        GlobalMenuAction::OpenRepo => state.open_repo_chooser(),
         GlobalMenuAction::Detach => {
             leave_modal(state);
             request_detach(state);

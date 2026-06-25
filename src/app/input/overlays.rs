@@ -1,11 +1,12 @@
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     layout::Rect,
     widgets::{Block, Borders},
 };
+use tracing::error;
 
 use crate::app::{
-    state::{AppState, DragState, DragTarget, Mode, NavigatorTarget},
+    state::{AppState, DragState, DragTarget, Mode, NavigatorTarget, RepoChooserState},
     App,
 };
 
@@ -192,6 +193,54 @@ impl App {
             return true;
         }
 
+        if self.state.mode == Mode::RepoChooser {
+            match mouse.kind {
+                MouseEventKind::Moved => {
+                    if let Some(idx) = self
+                        .state
+                        .repo_chooser_row_index_at(mouse.column, mouse.row)
+                    {
+                        self.state.repo_chooser.selected = idx;
+                        self.state.ensure_repo_chooser_selection_visible();
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(idx) = self
+                        .state
+                        .repo_chooser_row_index_at(mouse.column, mouse.row)
+                    {
+                        self.state.repo_chooser.selected = idx;
+                        self.accept_repo_chooser();
+                    } else if !self
+                        .state
+                        .repo_chooser_popup_contains(mouse.column, mouse.row)
+                    {
+                        leave_modal(&mut self.state);
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    self.state.repo_chooser.scroll =
+                        self.state.repo_chooser.scroll.saturating_sub(3);
+                    self.state.repo_chooser.selected = self.state.repo_chooser.scroll;
+                    self.state.clamp_repo_chooser_selection();
+                }
+                MouseEventKind::ScrollDown => {
+                    let viewport = self.state.repo_chooser_body_rect().height as usize;
+                    let max = self
+                        .state
+                        .repo_chooser_filtered_indices()
+                        .len()
+                        .saturating_sub(viewport);
+                    self.state.repo_chooser.scroll =
+                        self.state.repo_chooser.scroll.saturating_add(3).min(max);
+                    self.state.repo_chooser.selected = self.state.repo_chooser.scroll;
+                    self.state.clamp_repo_chooser_selection();
+                }
+                _ => {}
+            }
+            return true;
+        }
+
         if self.state.mode == Mode::KeybindHelp {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left)
@@ -253,6 +302,69 @@ impl App {
         }
 
         false
+    }
+
+    pub(crate) fn handle_repo_chooser_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                if self.state.repo_chooser.query.is_empty() {
+                    leave_modal(&mut self.state);
+                } else {
+                    self.state.repo_chooser.query.clear();
+                    self.state.clamp_repo_chooser_selection();
+                }
+            }
+            KeyCode::Enter => self.accept_repo_chooser(),
+            KeyCode::Up => self.state.move_repo_chooser_selection(-1),
+            KeyCode::Down => self.state.move_repo_chooser_selection(1),
+            KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.move_repo_chooser_selection(-1)
+            }
+            KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.move_repo_chooser_selection(1)
+            }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.repo_chooser.query.clear();
+                self.state.clamp_repo_chooser_selection();
+            }
+            KeyCode::Backspace => {
+                self.state.repo_chooser.query.pop();
+                self.state.clamp_repo_chooser_selection();
+            }
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.state.repo_chooser.query.push(c);
+                self.state.clamp_repo_chooser_selection();
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn accept_repo_chooser(&mut self) {
+        if let Some(repo) = self.state.repo_chooser_selected_repo() {
+            self.open_or_switch_workspace_for_repo(repo);
+        }
+    }
+
+    /// Open the picked repository: reuse an existing workspace already rooted at
+    /// it (matched by git-common-dir key), otherwise spawn a fresh workspace
+    /// there.
+    fn open_or_switch_workspace_for_repo(&mut self, repo: crate::workspace::Repository) {
+        let existing = self.state.workspaces.iter().position(|ws| {
+            ws.cached_git_space
+                .as_ref()
+                .is_some_and(|space| space.key == repo.key)
+        });
+        if let Some(idx) = existing {
+            self.state.switch_workspace(idx);
+            self.state.mode = Mode::Terminal;
+            return;
+        }
+        if let Err(err) = self.create_workspace_with_options(repo.root.clone(), true) {
+            error!(error = %err, root = %repo.root.display(), "repo chooser: open workspace failed");
+            leave_modal(&mut self.state);
+        }
     }
 }
 
@@ -347,6 +459,150 @@ impl AppState {
     pub(crate) fn navigator_row_caret_at(&self, col: u16) -> bool {
         let body = self.navigator_body_rect();
         col <= body.x.saturating_add(3)
+    }
+
+    /// Populate the repo chooser by scanning the configured root, then open it.
+    pub(crate) fn open_repo_chooser(&mut self) {
+        let repos = crate::workspace::default_scan_root()
+            .map(|root| crate::workspace::scan_repositories(&root))
+            .unwrap_or_default();
+        self.repo_chooser = RepoChooserState {
+            repos,
+            query: String::new(),
+            selected: 0,
+            scroll: 0,
+        };
+        self.mode = Mode::RepoChooser;
+    }
+
+    /// Indices into `repo_chooser.repos` that match the current query, in display
+    /// order. An empty query matches every repository.
+    pub(crate) fn repo_chooser_filtered_indices(&self) -> Vec<usize> {
+        let query = self.repo_chooser.query.trim().to_lowercase();
+        self.repo_chooser
+            .repos
+            .iter()
+            .enumerate()
+            .filter(|(_, repo)| {
+                query.is_empty()
+                    || crate::app::state::text_matches_query(&query, &repo.label.to_lowercase())
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    /// The repository at the current selection within the filtered rows.
+    pub(crate) fn repo_chooser_selected_repo(&self) -> Option<crate::workspace::Repository> {
+        let repo_idx = *self
+            .repo_chooser_filtered_indices()
+            .get(self.repo_chooser.selected)?;
+        self.repo_chooser.repos.get(repo_idx).cloned()
+    }
+
+    pub(crate) fn move_repo_chooser_selection(&mut self, delta: isize) {
+        let count = self.repo_chooser_filtered_indices().len();
+        if count == 0 {
+            self.repo_chooser.selected = 0;
+            self.repo_chooser.scroll = 0;
+            return;
+        }
+        let current = self.repo_chooser.selected.min(count - 1) as isize;
+        self.repo_chooser.selected = (current + delta).clamp(0, count as isize - 1) as usize;
+        self.ensure_repo_chooser_selection_visible();
+    }
+
+    pub(crate) fn clamp_repo_chooser_selection(&mut self) {
+        let count = self.repo_chooser_filtered_indices().len();
+        self.repo_chooser.selected = self.repo_chooser.selected.min(count.saturating_sub(1));
+        self.ensure_repo_chooser_selection_visible();
+    }
+
+    pub(crate) fn ensure_repo_chooser_selection_visible(&mut self) {
+        let viewport = self.repo_chooser_body_rect().height as usize;
+        if viewport == 0 {
+            self.repo_chooser.scroll = 0;
+            return;
+        }
+        let max_scroll = self
+            .repo_chooser_filtered_indices()
+            .len()
+            .saturating_sub(viewport);
+        if self.repo_chooser.selected < self.repo_chooser.scroll {
+            self.repo_chooser.scroll = self.repo_chooser.selected;
+        } else if self.repo_chooser.selected >= self.repo_chooser.scroll.saturating_add(viewport) {
+            self.repo_chooser.scroll = self
+                .repo_chooser
+                .selected
+                .saturating_add(1)
+                .saturating_sub(viewport);
+        }
+        self.repo_chooser.scroll = self.repo_chooser.scroll.min(max_scroll);
+    }
+
+    pub(crate) fn repo_chooser_popup_rect(&self) -> Rect {
+        let area = self.onboarding_full_area();
+        let margin_x = (area.width / 6).max(2);
+        let margin_y = (area.height / 6).max(1);
+        let width = area.width.saturating_sub(margin_x.saturating_mul(2));
+        let height = area.height.saturating_sub(margin_y.saturating_mul(2));
+        Rect::new(
+            area.x + margin_x,
+            area.y + margin_y,
+            width.max(4),
+            height.max(4),
+        )
+    }
+
+    pub(crate) fn repo_chooser_inner_rect(&self) -> Rect {
+        Block::default()
+            .borders(Borders::ALL)
+            .inner(self.repo_chooser_popup_rect())
+    }
+
+    pub(crate) fn repo_chooser_search_rect(&self) -> Rect {
+        let inner = self.repo_chooser_inner_rect();
+        Rect::new(inner.x, inner.y, inner.width, inner.height.min(1))
+    }
+
+    /// The scrollable list area: inner minus the search row, a separator row, and
+    /// the footer row.
+    pub(crate) fn repo_chooser_body_rect(&self) -> Rect {
+        let inner = self.repo_chooser_inner_rect();
+        if inner.height <= 3 {
+            return Rect::default();
+        }
+        Rect::new(
+            inner.x,
+            inner.y + 2,
+            inner.width,
+            inner.height.saturating_sub(3),
+        )
+    }
+
+    pub(crate) fn repo_chooser_footer_rect(&self) -> Rect {
+        let inner = self.repo_chooser_inner_rect();
+        Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            inner.height.min(1),
+        )
+    }
+
+    pub(crate) fn repo_chooser_popup_contains(&self, col: u16, row: u16) -> bool {
+        rect_contains(self.repo_chooser_popup_rect(), col, row)
+    }
+
+    pub(crate) fn repo_chooser_row_index_at(&self, col: u16, row: u16) -> Option<usize> {
+        let body = self.repo_chooser_body_rect();
+        if !rect_contains(body, col, row) {
+            return None;
+        }
+        let idx = self
+            .repo_chooser
+            .scroll
+            .saturating_add(row.saturating_sub(body.y) as usize);
+        (idx < self.repo_chooser_filtered_indices().len()).then_some(idx)
     }
 
     pub(super) fn onboarding_modal_inner(&self, popup_w: u16, popup_h: u16) -> Option<Rect> {

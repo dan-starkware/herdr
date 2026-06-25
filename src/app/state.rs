@@ -766,6 +766,7 @@ pub enum Mode {
     GlobalMenu,
     KeybindHelp,
     Navigator,
+    RepoChooser,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -815,6 +816,21 @@ pub(crate) struct NavigatorState {
     pub search_focused: bool,
     pub state_filter: Option<NavigatorStateFilter>,
     pub expanded_workspaces: std::collections::HashSet<String>,
+}
+
+/// State for the repo chooser overlay: a flat, fuzzy-filtered list of git
+/// repositories discovered under the scan root. Selecting one opens or switches
+/// to a workspace rooted at that repository.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RepoChooserState {
+    /// All repositories discovered on open, before filtering.
+    pub repos: Vec<crate::workspace::Repository>,
+    /// Current fuzzy-search query; empty means show every repository.
+    pub query: String,
+    /// Selected index into the currently filtered rows (not into `repos`).
+    pub selected: usize,
+    /// Scroll offset (first visible filtered row).
+    pub scroll: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1312,6 +1328,7 @@ pub struct AppState {
     pub product_announcement: Option<ProductAnnouncementState>,
     pub keybind_help: KeybindHelpState,
     pub navigator: NavigatorState,
+    pub repo_chooser: RepoChooserState,
     pub copy_mode: Option<CopyModeState>,
     pub workspace_scroll: usize,
     pub agent_panel_scroll: usize,
@@ -1661,6 +1678,7 @@ impl AppState {
             product_announcement: None,
             keybind_help: KeybindHelpState { scroll: 0 },
             navigator: NavigatorState::default(),
+            repo_chooser: RepoChooserState::default(),
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
