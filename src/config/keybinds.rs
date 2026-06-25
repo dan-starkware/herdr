@@ -303,6 +303,7 @@ pub struct Keybinds {
     pub detach: ActionKeybinds,
     pub reload_config: ActionKeybinds,
     pub open_notification_target: ActionKeybinds,
+    pub open_repo_chooser: ActionKeybinds,
     pub previous_workspace: ActionKeybinds,
     pub next_workspace: ActionKeybinds,
     pub previous_agent: ActionKeybinds,
@@ -465,6 +466,7 @@ impl Config {
             detach: empty_action!(),
             reload_config: empty_action!(),
             open_notification_target: empty_action!(),
+            open_repo_chooser: empty_action!(),
             previous_workspace: empty_action!(),
             next_workspace: empty_action!(),
             previous_agent: empty_action!(),
@@ -591,6 +593,7 @@ impl Config {
                 open_notification_target,
                 source
             );
+            apply_action!(keybinds.open_repo_chooser, open_repo_chooser, source);
             apply_action!(keybinds.previous_workspace, previous_workspace, source);
             apply_action!(keybinds.next_workspace, next_workspace, source);
             apply_action!(keybinds.previous_agent, previous_agent, source);

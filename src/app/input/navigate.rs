@@ -610,6 +610,7 @@ pub(crate) enum NavigateAction {
     Settings,
     ReloadConfig,
     OpenNotificationTarget,
+    OpenRepoChooser,
     Detach,
     OpenNavigator,
 }
@@ -715,6 +716,7 @@ fn action_for_key(
             &kb.open_notification_target,
             NavigateAction::OpenNotificationTarget,
         ),
+        (&kb.open_repo_chooser, NavigateAction::OpenRepoChooser),
         (&kb.detach, NavigateAction::Detach),
         (&kb.goto, NavigateAction::OpenNavigator),
     ] {
@@ -942,6 +944,7 @@ pub(super) fn execute_navigate_action_in_context(
                 leave_navigate_mode(state);
             }
         }
+        NavigateAction::OpenRepoChooser => state.open_repo_chooser(),
         NavigateAction::Detach => {
             super::modal::request_detach(state);
             leave_navigate_mode(state);
@@ -1407,6 +1410,31 @@ mod tests {
         assert_eq!(state.workspaces[1].focused_pane_id(), Some(target_pane));
         assert!(state.toast.is_none());
         assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn default_open_repo_chooser_key_opens_repo_chooser() {
+        let mut state = state_with_workspaces(&["test"]);
+
+        handle_navigate_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT),
+        );
+
+        assert_eq!(state.mode, Mode::RepoChooser);
+    }
+
+    #[test]
+    fn custom_open_repo_chooser_key_opens_repo_chooser() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds.open_repo_chooser = crate::config::ActionKeybinds::prefix("g");
+
+        handle_navigate_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
+        );
+
+        assert_eq!(state.mode, Mode::RepoChooser);
     }
 
     #[test]
