@@ -7,6 +7,27 @@ use crate::api::schema::{AgentStartParams, SplitDirection};
 /// TODO: make the agent selectable in the create form.
 const CREATE_AGENT_DEFAULT_ARGV: &[&str] = &["claude"];
 
+/// Repository label for which a created agent is *not* started in auto
+/// permission mode. We dogfood herdr on itself, so agents spawned in the herdr
+/// repo keep the default (prompting) permission mode; everywhere else they run
+/// with `--permission-mode auto`.
+const NO_AUTO_PERMISSION_REPO_LABEL: &str = "herdr";
+
+/// Build the argv for an agent created from the control panel. Agents run in
+/// auto permission mode (`--permission-mode auto`) everywhere except the herdr
+/// repo, which we dogfood and keep in the default prompting mode.
+fn create_agent_argv(repo_label: &str) -> Vec<String> {
+    let mut argv: Vec<String> = CREATE_AGENT_DEFAULT_ARGV
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    if repo_label != NO_AUTO_PERMISSION_REPO_LABEL {
+        argv.push("--permission-mode".to_string());
+        argv.push("auto".to_string());
+    }
+    argv
+}
+
 /// Web review surface a PR can be opened in. `alt+w` opens Graphite's PR page;
 /// `alt+W` opens Reviewable.
 #[derive(Clone, Copy)]
@@ -622,10 +643,7 @@ impl App {
         checkout_path: &std::path::Path,
         name: String,
     ) {
-        let argv: Vec<String> = CREATE_AGENT_DEFAULT_ARGV
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let argv = create_agent_argv(&repo.label);
         let (rows, cols) = self.state.estimate_pane_size();
         let spawned = match self.spawn_agent_workspace(checkout_path.to_path_buf(), rows, cols, &argv, true) {
             Ok((ws_idx, _tab, pane_id)) => {
@@ -2658,7 +2676,8 @@ fn prompt_has_typed_text(row: &str, cursor_col: u16) -> bool {
 #[cfg(test)]
 mod claude_fix_tests {
     use super::{
-        claude_fix_prompt, claude_reply_prompt, concise_gh_checkout_error, prompt_has_typed_text,
+        claude_fix_prompt, claude_reply_prompt, concise_gh_checkout_error, create_agent_argv,
+        prompt_has_typed_text,
     };
 
     #[test]
@@ -2682,6 +2701,19 @@ fatal: Not possible to fast-forward, aborting.";
             concise_gh_checkout_error(stderr),
             "could not resolve to a PullRequest"
         );
+    }
+
+    #[test]
+    fn created_agent_runs_in_auto_permission_mode_outside_herdr() {
+        assert_eq!(
+            create_agent_argv("acme"),
+            vec!["claude", "--permission-mode", "auto"]
+        );
+    }
+
+    #[test]
+    fn created_agent_keeps_default_permission_mode_in_herdr() {
+        assert_eq!(create_agent_argv("herdr"), vec!["claude"]);
     }
 
     #[test]
