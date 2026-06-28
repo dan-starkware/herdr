@@ -98,6 +98,13 @@ Set the root directory Herdr uses for Git worktree checkouts created from the si
 ```toml
 [worktrees]
 directory = "~/.herdr/worktrees"
+# Command launched by the "new agent" flow inside the worktree.
+agent_command = ["claude"]
+# Git-ignored files symlinked from the source checkout into each new agent
+# worktree, so agents inherit local setup git does not track. Defaults to
+# [".cargo/config.toml"]; missing files are skipped and tracked files are never
+# shadowed. Set to [] to disable, or add entries like ".env".
+agent_symlink_paths = [".cargo/config.toml"]
 ```
 
 Herdr creates checkouts under `<directory>/<repo>/<branch-slug>`. For sibling-style checkouts, set this to a directory such as `~/Projects/herdr-worktrees`. Relative values are resolved to an absolute path when the app applies the config.

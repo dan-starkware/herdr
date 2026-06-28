@@ -973,7 +973,13 @@ impl Default for WorktreesConfig {
         Self {
             directory: "~/.herdr/worktrees".into(),
             agent_command: vec!["claude".into()],
-            agent_symlink_paths: Vec::new(),
+            // Symlinked into every new agent worktree when present in the source
+            // checkout. `.cargo/config.toml` is git-ignored in this repo (it sets
+            // the Zig toolchain), so a fresh worktree can't build without it;
+            // defaulting it here makes herdr-on-herdr agents build out of the box.
+            // Harmless for repos that don't have the file (skipped) or that track
+            // it (never shadowed).
+            agent_symlink_paths: vec![".cargo/config.toml".into()],
         }
     }
 }
@@ -1235,7 +1241,10 @@ directory = "~/Projects/herdr-worktrees"
     fn worktree_agent_command_and_symlink_paths_default_and_parse() {
         let default_config = Config::default();
         assert_eq!(default_config.worktrees.agent_command, vec!["claude"]);
-        assert!(default_config.worktrees.agent_symlink_paths.is_empty());
+        assert_eq!(
+            default_config.worktrees.agent_symlink_paths,
+            vec![".cargo/config.toml"]
+        );
 
         let toml = r#"
 [worktrees]
