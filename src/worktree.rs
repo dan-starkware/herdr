@@ -554,6 +554,16 @@ pub(crate) fn worktree_list_contains_path(repo_root: &Path, path: &Path) -> Resu
         .any(|entry| canonical_or_original(&entry.path) == expected))
 }
 
+/// True if `branch` is currently checked out by any worktree of this repo
+/// (including the primary checkout). A branch can only be checked out by one
+/// worktree at a time, so callers use this to decide whether a new agent
+/// worktree can check the branch out directly or must base a fresh branch on it.
+pub(crate) fn branch_checked_out_anywhere(repo_root: &Path, branch: &str) -> Result<bool, String> {
+    Ok(list_existing_worktrees(repo_root)?
+        .into_iter()
+        .any(|entry| entry.branch.as_deref() == Some(branch)))
+}
+
 /// Local branch short names in the repo, sorted. Empty on any git failure.
 pub(crate) fn list_local_branches(repo_root: &Path) -> Vec<String> {
     let Ok(output) = std::process::Command::new("git")
@@ -1059,6 +1069,37 @@ prunable stale
         run_worktree_command(&remove).unwrap();
         assert!(!checkout.exists());
 
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn branch_checked_out_anywhere_detects_primary_and_linked_worktrees() {
+        let repo = create_committed_repo("worktree-checked-out-repo");
+        let primary = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["branch", "--show-current"])
+            .output()
+            .unwrap();
+        let primary_branch = String::from_utf8(primary.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert!(!primary_branch.is_empty());
+
+        // The primary checkout holds its current branch.
+        assert!(branch_checked_out_anywhere(&repo, &primary_branch).unwrap());
+        // A branch that exists nowhere is not checked out.
+        assert!(!branch_checked_out_anywhere(&repo, "worktree/never-created").unwrap());
+
+        // A branch checked out by a linked worktree is also detected.
+        let checkout = unique_temp_path("worktree-checked-out-linked");
+        let branch = "worktree/linked-checked-out";
+        let add = build_worktree_add_new_branch_command(&repo, &checkout, branch, "HEAD");
+        run_worktree_command(&add).unwrap();
+        assert!(branch_checked_out_anywhere(&repo, branch).unwrap());
+
+        let _ = std::fs::remove_dir_all(&checkout);
         let _ = std::fs::remove_dir_all(repo);
     }
 

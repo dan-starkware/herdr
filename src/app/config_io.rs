@@ -35,6 +35,15 @@ impl App {
         true
     }
 
+    /// Show a config-warning toast that auto-dismisses after a few seconds.
+    /// Use for transient action failures (create agent, etc.) so the warning
+    /// does not linger on screen indefinitely.
+    pub(super) fn set_transient_diagnostic(&mut self, message: String) {
+        self.state.config_diagnostic = Some(message);
+        self.config_diagnostic_deadline =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+    }
+
     pub(super) fn mark_onboarding_complete(&mut self) {
         self.update_config_file("onboarding setting", |content| {
             crate::config::upsert_top_level_bool(content, "onboarding", false)

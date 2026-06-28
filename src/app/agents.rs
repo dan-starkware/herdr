@@ -479,7 +479,7 @@ impl App {
         let space = match self.worktree_source_metadata(ws_idx) {
             Ok((_, space, _, _)) => space,
             Err(err) => {
-                self.state.config_diagnostic = Some(err);
+                self.set_transient_diagnostic(err);
                 return;
             }
         };
@@ -518,7 +518,7 @@ impl App {
 
         if let Some(parent) = checkout_path.parent() {
             if let Err(err) = std::fs::create_dir_all(parent) {
-                self.state.config_diagnostic = Some(format!(
+                self.set_transient_diagnostic(format!(
                     "create agent: could not create worktree dir: {err}"
                 ));
                 return;
@@ -527,11 +527,27 @@ impl App {
 
         let command = match &branch {
             AgentBranchSpec::Existing(branch_name) => {
-                crate::worktree::build_worktree_add_existing_branch_command(
-                    &repo.root,
-                    &checkout_path,
-                    branch_name,
-                )
+                // A branch can only be checked out by one worktree at a time. The
+                // default branch is almost always already checked out by the
+                // primary worktree, so base a fresh agent branch on it instead of
+                // failing the worktree add.
+                if matches!(
+                    crate::worktree::branch_checked_out_anywhere(&repo.root, branch_name),
+                    Ok(true)
+                ) {
+                    crate::worktree::build_worktree_add_new_branch_command(
+                        &repo.root,
+                        &checkout_path,
+                        &name,
+                        branch_name,
+                    )
+                } else {
+                    crate::worktree::build_worktree_add_existing_branch_command(
+                        &repo.root,
+                        &checkout_path,
+                        branch_name,
+                    )
+                }
             }
             AgentBranchSpec::New {
                 name: branch_name,
@@ -553,7 +569,7 @@ impl App {
         };
         if let Err(err) = crate::worktree::run_worktree_command(&command) {
             tracing::warn!(error = %err, "create-agent worktree add failed");
-            self.state.config_diagnostic = Some(format!("create agent failed: {err}"));
+            self.set_transient_diagnostic(format!("create agent failed: {err}"));
             return;
         }
 
@@ -587,7 +603,7 @@ impl App {
         argv: Vec<String>,
     ) {
         if argv.is_empty() {
-            self.state.config_diagnostic = Some("create agent: no agent command selected".into());
+            self.set_transient_diagnostic("create agent: no agent command selected".into());
             return;
         }
         let (rows, cols) = self.state.estimate_pane_size();
@@ -637,8 +653,7 @@ impl App {
             Err(err) => {
                 let body = self.agent_start_error_body(err);
                 tracing::warn!(error = %body.message, "create-agent spawn failed");
-                self.state.config_diagnostic =
-                    Some(format!("create agent failed: {}", body.message));
+                self.set_transient_diagnostic(format!("create agent failed: {}", body.message));
             }
         }
     }
