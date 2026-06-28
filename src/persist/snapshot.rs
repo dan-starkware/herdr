@@ -105,6 +105,11 @@ pub struct PaneSnapshot {
     pub agent_session: Option<PaneAgentSessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    /// Agent detected running in this pane at save time (label = launch command).
+    /// Lets a cold restore relaunch a manually-started agent that has no
+    /// explicit `launch_argv` and no resumable session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_agent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,6 +339,12 @@ fn capture_tab(
             .get(id)
             .and_then(|pane| terminals.get(&pane.attached_terminal_id))
             .and_then(|terminal| terminal.launch_argv.clone());
+        let detected_agent = tab
+            .panes
+            .get(id)
+            .and_then(|pane| terminals.get(&pane.attached_terminal_id))
+            .and_then(|terminal| terminal.detected_agent)
+            .map(|agent| crate::detect::agent_label(agent).to_string());
         let agent_session =
             tab.panes
                 .get(id)
@@ -366,6 +377,7 @@ fn capture_tab(
                 agent_name,
                 agent_session,
                 launch_argv,
+                detected_agent,
             },
         );
     }
@@ -608,6 +620,7 @@ mod tests {
                 agent_name: None,
                 agent_session: None,
                 launch_argv: None,
+                detected_agent: None,
             },
         );
         panes.insert(
@@ -618,6 +631,7 @@ mod tests {
                 agent_name: None,
                 agent_session: None,
                 launch_argv: None,
+                detected_agent: None,
             },
         );
 
@@ -1160,6 +1174,7 @@ mod tests {
                 agent_name: None,
                 agent_session: None,
                 launch_argv: None,
+                detected_agent: None,
             },
         );
         panes.insert(
@@ -1172,6 +1187,7 @@ mod tests {
                 agent_name: None,
                 agent_session: None,
                 launch_argv: None,
+                detected_agent: None,
             },
         );
 

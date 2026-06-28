@@ -486,6 +486,12 @@ fn restore_tab(
         let saved_label = saved_pane.and_then(|p| p.label.clone());
         let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
+        // Fall back to relaunching the detected agent (its label is its command)
+        // when there is no explicit launch command — covers manually-started
+        // agents, e.g. a shell where the user ran `codex`.
+        let detected_relaunch_argv = saved_pane
+            .and_then(|p| p.detected_agent.clone())
+            .map(|agent| vec![agent]);
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
         let saved_history =
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
@@ -567,7 +573,9 @@ fn restore_tab(
         let relaunch_argv: Option<&[String]> = if was_imported {
             None
         } else {
-            saved_launch_argv.as_deref()
+            saved_launch_argv
+                .as_deref()
+                .or(detected_relaunch_argv.as_deref())
         };
         let spawn_restored_runtime = |relaunch_argv: Option<&[String]>| {
             if let Some(argv) = relaunch_argv {
@@ -1198,6 +1206,7 @@ mod tests {
                                 value: "opencode-session".into(),
                             }),
                             launch_argv: None,
+                            detected_agent: None,
                         },
                     )]),
                     zoomed: false,
@@ -1276,6 +1285,7 @@ mod tests {
                                 agent_name: None,
                                 agent_session: None,
                                 launch_argv: None,
+                                detected_agent: None,
                             },
                         ),
                         (
@@ -1286,6 +1296,7 @@ mod tests {
                                 agent_name: None,
                                 agent_session: None,
                                 launch_argv: None,
+                                detected_agent: None,
                             },
                         ),
                     ]),
@@ -1338,6 +1349,7 @@ mod tests {
                     agent_name: None,
                     agent_session: None,
                     launch_argv: None,
+                    detected_agent: None,
                 },
             )
         };
@@ -1352,6 +1364,7 @@ mod tests {
                 value: "codex-session".into(),
             }),
             launch_argv: None,
+            detected_agent: None,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1503,6 +1516,7 @@ mod tests {
                                 value: "codex-session".into(),
                             }),
                             launch_argv: None,
+                            detected_agent: None,
                         },
                     )]),
                     zoomed: false,
@@ -1706,6 +1720,55 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restore_relaunches_detected_agent_when_no_launch_argv() {
+        // A manually-started agent has no launch_argv and (here) no resumable
+        // session, but a detected agent was recorded — its label is its command,
+        // so cold restore should re-run it. `id` stands in for the agent command
+        // (single token, prints an identifiable marker).
+        let (mut snapshot, _history) = snapshot_with_saved_pane_history();
+        if let Some(pane) = snapshot.workspaces[0].tabs[0].panes.get_mut(&0) {
+            pane.launch_argv = None;
+            pane.detected_agent = Some("id".into());
+        }
+        let (events, _events_rx) = mpsc::channel(8);
+        let render_notify = Arc::new(Notify::new());
+        let render_dirty = Arc::new(AtomicBool::new(false));
+
+        let (_workspaces, _terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            5,
+            40,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            render_notify,
+            render_dirty,
+        );
+        let runtime = runtimes
+            .values()
+            .next()
+            .expect("restored runtime should exist");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut seen = false;
+        while std::time::Instant::now() < deadline {
+            if runtime.recent_unwrapped_text(20).contains("uid=") {
+                seen = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            seen,
+            "cold restore should relaunch the detected agent when there is no launch_argv"
+        );
+    }
+
     fn snapshot_with_saved_pane_history() -> (SessionSnapshot, SessionHistorySnapshot) {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         let mut panes = HashMap::new();
@@ -1717,6 +1780,7 @@ mod tests {
                 agent_name: None,
                 agent_session: None,
                 launch_argv: None,
+                detected_agent: None,
             },
         );
         let history = SessionHistorySnapshot {
