@@ -121,7 +121,16 @@ fn agent_panel_entries_with_runtimes(
         .enumerate()
         .flat_map(|(ws_idx, ws)| {
             let multi_tab = ws.tabs.len() > 1;
-            let workspace_label = ws.display_name_from(&app.terminals, terminal_runtimes);
+            // Linked worktrees lead with their branch (the self-identifying key
+            // shared with the spaces panel); other workspaces keep the
+            // live-cwd-derived display name.
+            let is_linked_worktree = ws
+                .worktree_space()
+                .is_some_and(|space| space.is_linked_worktree);
+            let workspace_label = is_linked_worktree
+                .then(|| ws.branch())
+                .flatten()
+                .unwrap_or_else(|| ws.display_name_from(&app.terminals, terminal_runtimes));
             ws.pane_details(&app.terminals)
                 .into_iter()
                 .map(move |detail| AgentPanelEntry {
@@ -1247,6 +1256,59 @@ mod tests {
         assert_eq!(entries[1].primary_label, "two");
         assert_eq!(entries[1].primary_tab_label.as_deref(), Some("logs"));
         assert_eq!(entries[1].agent_label.as_deref(), Some("claude"));
+    }
+
+    fn linked_worktree_membership() -> crate::workspace::WorktreeSpaceMembership {
+        crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: std::path::PathBuf::from("/repo"),
+            checkout_path: std::path::PathBuf::from("/repo/wt"),
+            is_linked_worktree: true,
+        }
+    }
+
+    #[test]
+    fn agent_panel_entry_leads_with_branch_for_linked_worktree() {
+        let mut app = crate::app::state::AppState::test_new();
+        let mut ws = Workspace::test_new("herdr-1");
+        ws.cached_git_branch = Some("issue/82-fix".into());
+        ws.worktree_space = Some(linked_worktree_membership());
+        let pane = ws.tabs[0].root_pane;
+        app.workspaces = vec![ws];
+        app.ensure_test_terminals();
+        let term_id = app.workspaces[0].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&term_id).unwrap().detected_agent = Some(Agent::Claude);
+        app.active = Some(0);
+        app.selected = 0;
+
+        // A worktree agent leads with its branch (its self-identifying key),
+        // not the workspace display name.
+        let entries = agent_panel_entries(&app);
+        assert_eq!(entries[0].primary_label, "issue/82-fix");
+    }
+
+    #[test]
+    fn agent_panel_entry_worktree_without_branch_falls_back_to_display_name() {
+        let mut app = crate::app::state::AppState::test_new();
+        let mut ws = Workspace::test_new("plain-agent");
+        ws.cached_git_branch = None;
+        ws.worktree_space = Some(linked_worktree_membership());
+        let pane = ws.tabs[0].root_pane;
+        app.workspaces = vec![ws];
+        app.ensure_test_terminals();
+        let term_id = app.workspaces[0].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&term_id).unwrap().detected_agent = Some(Agent::Claude);
+        app.active = Some(0);
+        app.selected = 0;
+
+        // A worktree with no resolvable branch falls back to the display name.
+        let entries = agent_panel_entries(&app);
+        assert_eq!(entries[0].primary_label, "plain-agent");
     }
 
     #[test]

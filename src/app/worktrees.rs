@@ -1060,6 +1060,12 @@ mod tests {
         assert_eq!(terminal.agent_name, None);
         assert_eq!(terminal.manual_label.as_deref(), Some("herdr-1"));
 
+        // The slug is not stamped as the workspace custom name either: that
+        // would shadow the branch in the spaces panel (the grouped child label
+        // prefers the branch only when there is no custom name). display_name
+        // still resolves to a sane cwd-derived label.
+        assert_eq!(ws.custom_name, None);
+
         let checkout = ws
             .worktree_space()
             .expect("agent workspace is a linked worktree")

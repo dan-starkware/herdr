@@ -617,7 +617,11 @@ impl App {
         ) {
             Ok((spawned_idx, _tab, pane_id)) => {
                 if let Some(ws) = self.state.workspaces.get_mut(spawned_idx) {
-                    ws.set_custom_name(name.clone());
+                    // Deliberately do not set a custom name from the slug. The
+                    // spaces panel labels worktree children by their branch
+                    // (grouped_child_display_label prefers the branch only when
+                    // there is no custom name), and display_name() still falls
+                    // back to the worktree's cwd basename elsewhere.
                     ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
                         key: space.key.clone(),
                         label: space.label.clone(),
@@ -647,8 +651,7 @@ impl App {
                         // The worktree slug labels the pane border via the
                         // manual label, but it is deliberately not claimed as
                         // the agent name: doing so shadows the detected agent
-                        // type ("claude", "codex", ...) in the agents panel,
-                        // where the workspace name already carries the slug.
+                        // type ("claude", "codex", ...) in the agents panel.
                         terminal.set_manual_label(name);
                     }
                 }
