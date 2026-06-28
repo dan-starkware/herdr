@@ -757,6 +757,13 @@ pub struct IndexedKeysConfig {
 pub struct WorktreesConfig {
     /// Root directory under which Herdr creates <repo>/<branch-slug> checkouts.
     pub directory: String,
+    /// Command launched when starting an agent in its own worktree. Default: ["claude"].
+    pub agent_command: Vec<String>,
+    /// Gitignored paths symlinked from the source checkout into each new agent
+    /// worktree, so agents inherit local setup git does not track (e.g. build
+    /// config like `.cargo/config.toml`, or `.env`). Relative to the checkout
+    /// root. Default: none.
+    pub agent_symlink_paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -958,6 +965,8 @@ impl Default for WorktreesConfig {
     fn default() -> Self {
         Self {
             directory: "~/.herdr/worktrees".into(),
+            agent_command: vec!["claude".into()],
+            agent_symlink_paths: Vec::new(),
         }
     }
 }
@@ -1213,6 +1222,25 @@ directory = "~/Projects/herdr-worktrees"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.worktrees.directory, "~/Projects/herdr-worktrees");
+    }
+
+    #[test]
+    fn worktree_agent_command_and_symlink_paths_default_and_parse() {
+        let default_config = Config::default();
+        assert_eq!(default_config.worktrees.agent_command, vec!["claude"]);
+        assert!(default_config.worktrees.agent_symlink_paths.is_empty());
+
+        let toml = r#"
+[worktrees]
+agent_command = ["codex", "--yolo"]
+agent_symlink_paths = [".cargo/config.toml", ".env"]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.worktrees.agent_command, vec!["codex", "--yolo"]);
+        assert_eq!(
+            config.worktrees.agent_symlink_paths,
+            vec![".cargo/config.toml", ".env"]
+        );
     }
 
     #[test]
