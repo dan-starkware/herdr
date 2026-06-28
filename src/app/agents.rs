@@ -476,18 +476,39 @@ impl App {
     /// configured gitignored paths are symlinked in so the agent inherits local
     /// setup git does not track. Diagnostics surface through `config_diagnostic`.
     pub(crate) fn create_agent_in_worktree(&mut self, ws_idx: usize) {
-        let (space, source_checkout_path) = match self.worktree_source_metadata(ws_idx) {
-            Ok((_, space, source, _)) => (space, source),
+        let space = match self.worktree_source_metadata(ws_idx) {
+            Ok((_, space, _, _)) => space,
             Err(err) => {
                 self.state.config_diagnostic = Some(err);
                 return;
             }
         };
+        let repo = crate::workspace::Repository {
+            key: space.key.clone(),
+            root: space.repo_root.clone(),
+            label: space.label.clone(),
+        };
+        // Quick path (context menu): a new branch named after the agent, off HEAD.
+        self.create_agent_in_worktree_for(
+            &repo,
+            AgentBranchSpec::NewFromAgentName {
+                base: "HEAD".into(),
+            },
+        );
+    }
 
-        let name = self.default_agent_worktree_name(&space.label);
+    /// Create a worktree for `repo` per `branch`, launch the configured agent in
+    /// it as its own workspace, and tag it for kill-time cleanup. Diagnostics
+    /// surface through `config_diagnostic`.
+    pub(crate) fn create_agent_in_worktree_for(
+        &mut self,
+        repo: &crate::workspace::Repository,
+        branch: AgentBranchSpec,
+    ) {
+        let name = self.default_agent_worktree_name(&repo.label);
         let checkout_path = crate::worktree::default_checkout_path(
             &self.state.worktree_directory,
-            &space.label,
+            &repo.label,
             &name,
         );
 
@@ -500,13 +521,32 @@ impl App {
             }
         }
 
-        // New branch named after the agent, off the source checkout's HEAD.
-        let command = crate::worktree::build_worktree_add_new_branch_command(
-            &space.repo_root,
-            &checkout_path,
-            &name,
-            "HEAD",
-        );
+        let command = match &branch {
+            AgentBranchSpec::Existing(branch_name) => {
+                crate::worktree::build_worktree_add_existing_branch_command(
+                    &repo.root,
+                    &checkout_path,
+                    branch_name,
+                )
+            }
+            AgentBranchSpec::New {
+                name: branch_name,
+                base,
+            } => crate::worktree::build_worktree_add_new_branch_command(
+                &repo.root,
+                &checkout_path,
+                branch_name,
+                base,
+            ),
+            AgentBranchSpec::NewFromAgentName { base } => {
+                crate::worktree::build_worktree_add_new_branch_command(
+                    &repo.root,
+                    &checkout_path,
+                    &name,
+                    base,
+                )
+            }
+        };
         if let Err(err) = crate::worktree::run_worktree_command(&command) {
             tracing::warn!(error = %err, "create-agent worktree add failed");
             self.state.config_diagnostic = Some(format!("create agent failed: {err}"));
@@ -515,7 +555,7 @@ impl App {
 
         // Inherit local gitignored setup (build config, env files, ...).
         let failures = crate::worktree::symlink_agent_paths(
-            &source_checkout_path,
+            &repo.root,
             &checkout_path,
             &self.state.agent_worktree_symlink_paths,
         );
@@ -523,6 +563,13 @@ impl App {
             tracing::warn!(path, error = %err, "agent worktree symlink failed");
         }
 
+        let space = crate::workspace::GitSpaceMetadata {
+            key: repo.key.clone(),
+            checkout_key: repo.root.display().to_string(),
+            label: repo.label.clone(),
+            repo_root: repo.root.clone(),
+            is_linked_worktree: false,
+        };
         self.finish_create_agent_in_worktree(&space, &checkout_path, name);
     }
 
@@ -592,6 +639,16 @@ impl App {
             }
         }
     }
+}
+
+/// Which branch a worktree agent should be created on.
+pub(crate) enum AgentBranchSpec {
+    /// Check out an existing branch in the worktree.
+    Existing(String),
+    /// Create a new branch `name` off `base`.
+    New { name: String, base: String },
+    /// Create a new branch named after the generated agent name, off `base`.
+    NewFromAgentName { base: String },
 }
 
 pub(super) enum AgentStartError {

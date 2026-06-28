@@ -767,6 +767,7 @@ pub enum Mode {
     KeybindHelp,
     Navigator,
     RepoChooser,
+    BranchChooser,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -828,6 +829,44 @@ pub(crate) struct RepoChooserState {
     /// Current fuzzy-search query; empty means show every repository.
     pub query: String,
     /// Selected index into the currently filtered rows (not into `repos`).
+    pub selected: usize,
+    /// Scroll offset (first visible filtered row).
+    pub scroll: usize,
+    /// What happens when a repository is picked.
+    pub intent: RepoChooserIntent,
+}
+
+/// What selecting a repository in the repo chooser does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum RepoChooserIntent {
+    /// Open (or switch to) a plain workspace rooted at the repo. (Default.)
+    #[default]
+    OpenWorkspace,
+    /// Advance into the new-agent flow: pick a branch, then launch an agent in
+    /// a worktree.
+    NewAgent,
+}
+
+/// In-flight state for the "new agent" flow: repo chooser → branch chooser →
+/// launch an agent in a worktree. TUI/client presentation state only.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NewAgentFlow {
+    /// The repository picked in the repo step, carried into the branch step.
+    pub repo: Option<crate::workspace::Repository>,
+}
+
+/// State for the branch chooser overlay: a fuzzy-filtered list of the chosen
+/// repo's local branches. Picking a match checks it out in a new worktree;
+/// typing a new name creates that branch off `default_base`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BranchChooserState {
+    /// All local branch names, before filtering.
+    pub branches: Vec<String>,
+    /// Default base for a newly typed branch name (e.g. "main").
+    pub default_base: String,
+    /// Current fuzzy-search query / new-branch name.
+    pub query: String,
+    /// Selected index into the currently filtered rows.
     pub selected: usize,
     /// Scroll offset (first visible filtered row).
     pub scroll: usize,
@@ -1351,6 +1390,13 @@ pub struct AppState {
     pub keybind_help: KeybindHelpState,
     pub navigator: NavigatorState,
     pub repo_chooser: RepoChooserState,
+    pub branch_chooser: BranchChooserState,
+    /// In-flight new-agent flow (repo → branch → worktree agent), if active.
+    pub new_agent_flow: Option<NewAgentFlow>,
+    /// Set by a UI action (launcher/keybind) to start the new-agent flow.
+    pub request_start_new_agent_flow: bool,
+    /// Set when the branch step resolved a choice for the main loop to act on.
+    pub request_new_agent_branch_choice: Option<crate::ui::branch_chooser::BranchChoice>,
     pub copy_mode: Option<CopyModeState>,
     pub workspace_scroll: usize,
     pub agent_panel_scroll: usize,
@@ -1716,6 +1762,10 @@ impl AppState {
             keybind_help: KeybindHelpState { scroll: 0 },
             navigator: NavigatorState::default(),
             repo_chooser: RepoChooserState::default(),
+            branch_chooser: BranchChooserState::default(),
+            new_agent_flow: None,
+            request_start_new_agent_flow: false,
+            request_new_agent_branch_choice: None,
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
@@ -2167,6 +2217,15 @@ impl AppState {
 mod tests {
     use super::*;
     use crossterm::event::KeyEvent;
+
+    #[test]
+    fn open_new_agent_flow_opens_repo_chooser_with_new_agent_intent() {
+        let mut state = AppState::test_new();
+        state.open_new_agent_flow();
+        assert_eq!(state.mode, Mode::RepoChooser);
+        assert!(state.new_agent_flow.is_some());
+        assert_eq!(state.repo_chooser.intent, RepoChooserIntent::NewAgent);
+    }
 
     #[test]
     fn agent_terminal_keeps_final_child_cursor_exposed() {

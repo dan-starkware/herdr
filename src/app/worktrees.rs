@@ -1008,6 +1008,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&worktree_root);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_agent_for_existing_branch_checks_it_out_in_worktree() {
+        let repo = create_committed_repo("create-agent-existing-branch-repo");
+        run_git(&repo, &["branch", "feature/login"]);
+        let worktree_root = unique_temp_path("create-agent-existing-branch-root");
+
+        let mut app = app_for_worktree_tests();
+        app.state.worktree_directory = worktree_root.clone();
+        app.state.agent_worktree_command = vec!["sh".into()];
+        let repository = crate::workspace::Repository {
+            key: "repo-key".into(),
+            root: repo.clone(),
+            label: "herdr".into(),
+        };
+
+        app.create_agent_in_worktree_for(
+            &repository,
+            crate::app::agents::AgentBranchSpec::Existing("feature/login".into()),
+        );
+        assert!(
+            app.state.config_diagnostic.is_none(),
+            "diag: {:?}",
+            app.state.config_diagnostic
+        );
+
+        let membership = app
+            .state
+            .workspaces
+            .last()
+            .unwrap()
+            .worktree_space()
+            .cloned()
+            .unwrap();
+        assert!(membership.is_linked_worktree);
+        let branch = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .into_iter()
+            .find(|wt| {
+                crate::worktree::canonical_or_original(&wt.path)
+                    == crate::worktree::canonical_or_original(&membership.checkout_path)
+            })
+            .and_then(|wt| wt.branch);
+        assert_eq!(branch.as_deref(), Some("feature/login"));
+
+        let remove =
+            crate::worktree::build_worktree_remove_command(&repo, &membership.checkout_path, true);
+        let _ = crate::worktree::run_worktree_command(&remove);
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&worktree_root);
+    }
+
     fn shutdown_test_runtimes(app: &mut App) {
         for (_, runtime) in app.terminal_runtimes.drain() {
             runtime.shutdown();

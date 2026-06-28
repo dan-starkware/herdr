@@ -6,7 +6,10 @@ use ratatui::{
 use tracing::error;
 
 use crate::app::{
-    state::{AppState, DragState, DragTarget, Mode, NavigatorTarget, RepoChooserState},
+    state::{
+        AppState, BranchChooserState, DragState, DragTarget, Mode, NavigatorTarget, NewAgentFlow,
+        RepoChooserIntent, RepoChooserState,
+    },
     App,
 };
 
@@ -241,6 +244,56 @@ impl App {
             return true;
         }
 
+        if self.state.mode == Mode::BranchChooser {
+            match mouse.kind {
+                MouseEventKind::Moved => {
+                    if let Some(idx) = self
+                        .state
+                        .branch_chooser_row_index_at(mouse.column, mouse.row)
+                    {
+                        self.state.branch_chooser.selected = idx;
+                        self.state.ensure_branch_chooser_selection_visible();
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(idx) = self
+                        .state
+                        .branch_chooser_row_index_at(mouse.column, mouse.row)
+                    {
+                        self.state.branch_chooser.selected = idx;
+                        // Clear any typed query so the highlighted row is chosen.
+                        self.state.branch_chooser.query.clear();
+                        self.accept_branch_chooser();
+                    } else if !self
+                        .state
+                        .branch_chooser_popup_contains(mouse.column, mouse.row)
+                    {
+                        self.state.open_new_agent_flow();
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    self.state.branch_chooser.scroll =
+                        self.state.branch_chooser.scroll.saturating_sub(3);
+                    self.state.branch_chooser.selected = self.state.branch_chooser.scroll;
+                    self.state.clamp_branch_chooser_selection();
+                }
+                MouseEventKind::ScrollDown => {
+                    let viewport = self.state.branch_chooser_body_rect().height as usize;
+                    let max = self
+                        .state
+                        .branch_chooser_filtered_indices()
+                        .len()
+                        .saturating_sub(viewport);
+                    self.state.branch_chooser.scroll =
+                        self.state.branch_chooser.scroll.saturating_add(3).min(max);
+                    self.state.branch_chooser.selected = self.state.branch_chooser.scroll;
+                    self.state.clamp_branch_chooser_selection();
+                }
+                _ => {}
+            }
+            return true;
+        }
+
         if self.state.mode == Mode::KeybindHelp {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left)
@@ -342,9 +395,64 @@ impl App {
     }
 
     pub(super) fn accept_repo_chooser(&mut self) {
-        if let Some(repo) = self.state.repo_chooser_selected_repo() {
-            self.open_or_switch_workspace_for_repo(repo);
+        let Some(repo) = self.state.repo_chooser_selected_repo() else {
+            return;
+        };
+        match self.state.repo_chooser.intent {
+            RepoChooserIntent::OpenWorkspace => self.open_or_switch_workspace_for_repo(repo),
+            RepoChooserIntent::NewAgent => {
+                self.state.open_branch_chooser(&repo);
+                self.state.new_agent_flow = Some(NewAgentFlow { repo: Some(repo) });
+            }
         }
+    }
+
+    pub(crate) fn handle_branch_chooser_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                if self.state.branch_chooser.query.is_empty() {
+                    // Back a step to the repo chooser (still in new-agent intent).
+                    self.state.open_new_agent_flow();
+                } else {
+                    self.state.branch_chooser.query.clear();
+                    self.state.clamp_branch_chooser_selection();
+                }
+            }
+            KeyCode::Enter => self.accept_branch_chooser(),
+            KeyCode::Up => self.state.move_branch_chooser_selection(-1),
+            KeyCode::Down => self.state.move_branch_chooser_selection(1),
+            KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.move_branch_chooser_selection(-1)
+            }
+            KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.move_branch_chooser_selection(1)
+            }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.branch_chooser.query.clear();
+                self.state.clamp_branch_chooser_selection();
+            }
+            KeyCode::Backspace => {
+                self.state.branch_chooser.query.pop();
+                self.state.clamp_branch_chooser_selection();
+            }
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.state.branch_chooser.query.push(c);
+                self.state.clamp_branch_chooser_selection();
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn accept_branch_chooser(&mut self) {
+        if let Some(choice) =
+            crate::ui::branch_chooser::resolve_branch_choice(&self.state.branch_chooser)
+        {
+            self.state.request_new_agent_branch_choice = Some(choice);
+        }
+        // The main loop performs the actual worktree+agent creation.
+        leave_modal(&mut self.state);
     }
 
     /// Open the picked repository: reuse an existing workspace already rooted at
@@ -471,8 +579,152 @@ impl AppState {
             query: String::new(),
             selected: 0,
             scroll: 0,
+            intent: RepoChooserIntent::OpenWorkspace,
         };
         self.mode = Mode::RepoChooser;
+    }
+
+    /// Start the new-agent flow: open the repo chooser in `NewAgent` intent so
+    /// picking a repo advances to the branch step instead of opening a workspace.
+    pub(crate) fn open_new_agent_flow(&mut self) {
+        let repos = crate::workspace::default_scan_root()
+            .map(|root| crate::workspace::scan_repositories(&root))
+            .unwrap_or_default();
+        self.repo_chooser = RepoChooserState {
+            repos,
+            query: String::new(),
+            selected: 0,
+            scroll: 0,
+            intent: RepoChooserIntent::NewAgent,
+        };
+        self.new_agent_flow = Some(NewAgentFlow { repo: None });
+        self.mode = Mode::RepoChooser;
+    }
+
+    /// Populate and open the branch chooser for `repo` (the new agent's repo).
+    pub(crate) fn open_branch_chooser(&mut self, repo: &crate::workspace::Repository) {
+        let branches = crate::worktree::list_local_branches(&repo.root);
+        let default_base = crate::worktree::default_base_branch(&repo.root);
+        self.branch_chooser = BranchChooserState {
+            branches,
+            default_base,
+            query: String::new(),
+            selected: 0,
+            scroll: 0,
+        };
+        self.mode = Mode::BranchChooser;
+    }
+
+    /// Indices into `branch_chooser.branches` matching the query, in display
+    /// order. Empty query matches all.
+    pub(crate) fn branch_chooser_filtered_indices(&self) -> Vec<usize> {
+        crate::ui::branch_chooser::filtered_branch_indices(&self.branch_chooser)
+    }
+
+    pub(crate) fn move_branch_chooser_selection(&mut self, delta: isize) {
+        let count = self.branch_chooser_filtered_indices().len();
+        if count == 0 {
+            self.branch_chooser.selected = 0;
+            self.branch_chooser.scroll = 0;
+            return;
+        }
+        let current = self.branch_chooser.selected.min(count - 1) as isize;
+        self.branch_chooser.selected = (current + delta).clamp(0, count as isize - 1) as usize;
+        self.ensure_branch_chooser_selection_visible();
+    }
+
+    pub(crate) fn clamp_branch_chooser_selection(&mut self) {
+        let count = self.branch_chooser_filtered_indices().len();
+        self.branch_chooser.selected = self.branch_chooser.selected.min(count.saturating_sub(1));
+        self.ensure_branch_chooser_selection_visible();
+    }
+
+    pub(crate) fn ensure_branch_chooser_selection_visible(&mut self) {
+        let viewport = self.branch_chooser_body_rect().height as usize;
+        if viewport == 0 {
+            self.branch_chooser.scroll = 0;
+            return;
+        }
+        let max_scroll = self
+            .branch_chooser_filtered_indices()
+            .len()
+            .saturating_sub(viewport);
+        if self.branch_chooser.selected < self.branch_chooser.scroll {
+            self.branch_chooser.scroll = self.branch_chooser.selected;
+        } else if self.branch_chooser.selected
+            >= self.branch_chooser.scroll.saturating_add(viewport)
+        {
+            self.branch_chooser.scroll = self
+                .branch_chooser
+                .selected
+                .saturating_add(1)
+                .saturating_sub(viewport);
+        }
+        self.branch_chooser.scroll = self.branch_chooser.scroll.min(max_scroll);
+    }
+
+    pub(crate) fn branch_chooser_popup_rect(&self) -> Rect {
+        let area = self.onboarding_full_area();
+        let margin_x = (area.width / 6).max(2);
+        let margin_y = (area.height / 6).max(1);
+        let width = area.width.saturating_sub(margin_x.saturating_mul(2));
+        let height = area.height.saturating_sub(margin_y.saturating_mul(2));
+        Rect::new(
+            area.x + margin_x,
+            area.y + margin_y,
+            width.max(4),
+            height.max(4),
+        )
+    }
+
+    pub(crate) fn branch_chooser_inner_rect(&self) -> Rect {
+        Block::default()
+            .borders(Borders::ALL)
+            .inner(self.branch_chooser_popup_rect())
+    }
+
+    pub(crate) fn branch_chooser_search_rect(&self) -> Rect {
+        let inner = self.branch_chooser_inner_rect();
+        Rect::new(inner.x, inner.y, inner.width, inner.height.min(1))
+    }
+
+    pub(crate) fn branch_chooser_body_rect(&self) -> Rect {
+        let inner = self.branch_chooser_inner_rect();
+        if inner.height <= 3 {
+            return Rect::default();
+        }
+        Rect::new(
+            inner.x,
+            inner.y + 2,
+            inner.width,
+            inner.height.saturating_sub(3),
+        )
+    }
+
+    pub(crate) fn branch_chooser_footer_rect(&self) -> Rect {
+        let inner = self.branch_chooser_inner_rect();
+        Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            inner.height.min(1),
+        )
+    }
+
+    pub(crate) fn branch_chooser_popup_contains(&self, col: u16, row: u16) -> bool {
+        rect_contains(self.branch_chooser_popup_rect(), col, row)
+    }
+
+    pub(crate) fn branch_chooser_row_index_at(&self, col: u16, row: u16) -> Option<usize> {
+        let body = self.branch_chooser_body_rect();
+        if !rect_contains(body, col, row) {
+            return None;
+        }
+        let idx = self
+            .branch_chooser
+            .scroll
+            .saturating_add(row.saturating_sub(body.y) as usize);
+        (idx < self.branch_chooser_filtered_indices().len()).then_some(idx)
     }
 
     /// Indices into `repo_chooser.repos` that match the current query, in display

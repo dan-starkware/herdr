@@ -554,6 +554,61 @@ pub(crate) fn worktree_list_contains_path(repo_root: &Path, path: &Path) -> Resu
         .any(|entry| canonical_or_original(&entry.path) == expected))
 }
 
+/// Local branch short names in the repo, sorted. Empty on any git failure.
+pub(crate) fn list_local_branches(repo_root: &Path) -> Vec<String> {
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    branches.sort();
+    branches
+}
+
+/// The repo's default base branch for new work: the target of `origin/HEAD` if
+/// set, else the first of `main`/`master` that exists locally, else `"main"`.
+pub(crate) fn default_base_branch(repo_root: &Path) -> String {
+    if let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args([
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ])
+        .output()
+    {
+        if output.status.success() {
+            let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if let Some(stripped) = head.strip_prefix("origin/") {
+                if !stripped.is_empty() {
+                    return stripped.to_string();
+                }
+            }
+        }
+    }
+    let locals = list_local_branches(repo_root);
+    for candidate in ["main", "master"] {
+        if locals.iter().any(|branch| branch == candidate) {
+            return candidate.to_string();
+        }
+    }
+    "main".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,6 +652,36 @@ mod tests {
     fn generated_branch_slug_is_worktree_namespaced_and_stable() {
         assert_eq!(generated_branch_slug(0), "worktree/brave-river-0000");
         assert_eq!(generated_branch_slug(9), "worktree/calm-cloud-0009");
+    }
+
+    #[test]
+    fn list_local_branches_returns_sorted_short_names() {
+        let repo = create_committed_repo("list-branches-repo");
+        run_git(&repo, &["branch", "feature/x"]);
+        run_git(&repo, &["branch", "zeta"]);
+        let branches = list_local_branches(&repo);
+        assert!(branches.contains(&"feature/x".to_string()));
+        assert!(branches.contains(&"zeta".to_string()));
+        let mut sorted = branches.clone();
+        sorted.sort();
+        assert_eq!(branches, sorted);
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn list_local_branches_empty_for_non_repo() {
+        let dir = unique_temp_path("not-a-repo");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(list_local_branches(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn default_base_branch_prefers_existing_initial_branch() {
+        let repo = create_committed_repo("default-base-repo");
+        let base = default_base_branch(&repo);
+        assert!(list_local_branches(&repo).contains(&base));
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]

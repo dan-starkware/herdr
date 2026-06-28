@@ -107,6 +107,7 @@ impl App {
                     handle_navigator_key(&mut self.state, &self.terminal_runtimes, key_event)
                 }
                 Mode::RepoChooser => self.handle_repo_chooser_key(key_event),
+                Mode::BranchChooser => self.handle_branch_chooser_key(key_event),
                 Mode::Terminal => unreachable!(),
             },
         }
