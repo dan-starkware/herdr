@@ -619,6 +619,130 @@ pub(crate) fn default_base_branch(repo_root: &Path) -> String {
     "main".to_string()
 }
 
+/// A branch row for the chooser. `graph_prefix` holds Graphite stack-graph art
+/// (`│ ◯  `) for gt-tracked repos; it is empty for a plain git branch list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BranchRow {
+    pub name: String,
+    pub graph_prefix: String,
+    pub is_current: bool,
+}
+
+impl BranchRow {
+    fn plain(name: String) -> Self {
+        BranchRow {
+            name,
+            graph_prefix: String::new(),
+            is_current: false,
+        }
+    }
+}
+
+/// Branch rows for the chooser. In a Graphite-tracked repo this is the
+/// `gt log short` stack graph (so parent/child connectors show); otherwise it
+/// is the flat local branch list. Always falls back to plain branches if the
+/// graph is unavailable.
+pub(crate) fn list_chooser_branches(repo_root: &Path) -> Vec<BranchRow> {
+    if graphite_is_tracked(repo_root) {
+        let graph = graphite_log_branches(repo_root);
+        if !graph.is_empty() {
+            return graph;
+        }
+    }
+    list_local_branches(repo_root)
+        .into_iter()
+        .map(BranchRow::plain)
+        .collect()
+}
+
+/// Whether Graphite already tracks branches in this repo (has `branch-metadata`
+/// refs). Gating every `gt` call on this avoids Graphite's interactive
+/// auto-setup in repos that don't use it.
+pub(crate) fn graphite_is_tracked(repo_root: &Path) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["for-each-ref", "--count=1", "refs/branch-metadata"])
+        .output()
+        .map(|out| out.status.success() && !out.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// Parse `gt log short` into branch rows, preserving each row's graph art as its
+/// `graph_prefix`. Empty if `gt` is unavailable or prints no graph rows.
+fn graphite_log_branches(repo_root: &Path) -> Vec<BranchRow> {
+    let output = match std::process::Command::new("gt")
+        .current_dir(repo_root)
+        .args(["log", "short"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return Vec::new(),
+    };
+    let Ok(raw) = String::from_utf8(output.stdout) else {
+        return Vec::new();
+    };
+    raw.lines().filter_map(parse_graphite_log_line).collect()
+}
+
+/// Split one `gt log short` row into its graph art prefix and branch name.
+/// Graph rows look like `│ ◯  feature/x (worktree)`; non-graph chatter (the
+/// auto-setup banner, blank lines) has no leading graph glyph and is dropped.
+fn parse_graphite_log_line(line: &str) -> Option<BranchRow> {
+    let line = line.trim_end();
+    // The branch name begins at the first non-graph, non-space character.
+    let name_start = line.char_indices().find(|(_, c)| !is_graph_glyph(*c))?.0;
+    if name_start == 0 {
+        // No leading graph art — this isn't a stack row.
+        return None;
+    }
+    let prefix = &line[..name_start];
+    // A real stack row carries a node glyph; indented non-graph text does not.
+    if !prefix.contains('◯') && !prefix.contains('◉') {
+        return None;
+    }
+    let name = line[name_start..].split_whitespace().next().unwrap_or("");
+    if name.is_empty() {
+        return None;
+    }
+    Some(BranchRow {
+        name: name.to_string(),
+        // The filled node `◉` marks the checked-out branch.
+        is_current: prefix.contains('◉'),
+        graph_prefix: prefix.to_string(),
+    })
+}
+
+/// Best-effort `gt track --parent <base>` inside `checkout_path` so a freshly
+/// created branch stacks on top of its base. `gt` has no `-C`, so we set the
+/// working directory; `--quiet --no-interactive` keeps it from blocking on a
+/// prompt. Any failure is logged and ignored — the git branch is correct
+/// regardless of whether Graphite tracking succeeds.
+pub(crate) fn graphite_track(checkout_path: &Path, base: &str) {
+    let result = std::process::Command::new("gt")
+        .current_dir(checkout_path)
+        .args(["track", "--parent", base, "--quiet", "--no-interactive"])
+        .output();
+    match result {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(stderr = %stderr.trim(), base, "gt track failed (ignored)");
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "gt track could not be launched (ignored)");
+        }
+    }
+}
+
+/// Whether `c` is part of Graphite's stack-graph drawing (box-drawing lines, the
+/// `◯`/`◉` nodes) or inter-column spacing.
+fn is_graph_glyph(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(c as u32, 0x2500..=0x257F) // box drawing (│ ─ ┘ ┴ …)
+        || matches!(c as u32, 0x25A0..=0x25FF) // geometric shapes (◯ ◉)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1100,6 +1224,80 @@ prunable stale
         assert!(branch_checked_out_anywhere(&repo, branch).unwrap());
 
         let _ = std::fs::remove_dir_all(&checkout);
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn parses_graphite_log_short_graph_rows() {
+        // A root-of-stack row: node + name.
+        let top = parse_graphite_log_line("◯    dan/contracts/09-ed25519-verify").unwrap();
+        assert_eq!(top.name, "dan/contracts/09-ed25519-verify");
+        assert!(!top.is_current);
+        assert_eq!(top.graph_prefix, "◯    ");
+
+        // The checked-out branch uses the filled node `◉`.
+        let current = parse_graphite_log_line("◉    dan/contracts/07").unwrap();
+        assert!(current.is_current);
+
+        // A row nested under a connector column, with a worktree annotation.
+        let nested = parse_graphite_log_line("│ ◯  dan/ts/04-test-runner (wt_frontend)").unwrap();
+        assert_eq!(nested.name, "dan/ts/04-test-runner");
+        assert_eq!(nested.graph_prefix, "│ ◯  ");
+
+        // A merge/branch-point row with horizontal connectors.
+        let joined = parse_graphite_log_line("◯──┘  dan/contracts/01-skeleton").unwrap();
+        assert_eq!(joined.name, "dan/contracts/01-skeleton");
+
+        // Non-graph chatter (auto-setup banner, blanks) is dropped.
+        assert!(parse_graphite_log_line("Welcome to Graphite!").is_none());
+        assert!(parse_graphite_log_line("").is_none());
+        assert!(parse_graphite_log_line("Trunk set to master").is_none());
+    }
+
+    #[test]
+    fn graphite_is_tracked_false_for_plain_repo() {
+        let repo = create_committed_repo("graphite-untracked");
+        assert!(!graphite_is_tracked(&repo));
+        // A plain repo's chooser list falls back to local branches with no art.
+        let rows = list_chooser_branches(&repo);
+        assert!(rows.iter().all(|row| row.graph_prefix.is_empty()));
+        assert!(rows
+            .iter()
+            .any(|row| row.name == "main" || row.name == "master"));
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn graphite_is_tracked_true_after_metadata_ref_added() {
+        let repo = create_committed_repo("graphite-tracked");
+        assert!(!graphite_is_tracked(&repo));
+
+        // Simulate Graphite metadata: a branch-metadata ref pointing at a blob.
+        let json = r#"{"parentBranchName":"main"}"#;
+        let hash_out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child
+                    .stdin
+                    .take()
+                    .expect("stdin")
+                    .write_all(json.as_bytes())?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        let oid = String::from_utf8(hash_out.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        run_git(&repo, &["update-ref", "refs/branch-metadata/feature", &oid]);
+
+        assert!(graphite_is_tracked(&repo));
         let _ = std::fs::remove_dir_all(repo);
     }
 

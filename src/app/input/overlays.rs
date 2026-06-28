@@ -578,6 +578,9 @@ impl App {
             crate::ui::branch_chooser::BranchChoice::New { name, base } => {
                 crate::app::agents::AgentBranchSpec::New { name, base }
             }
+            crate::ui::branch_chooser::BranchChoice::StackOnto { base } => {
+                crate::app::agents::AgentBranchSpec::NewFromAgentName { base }
+            }
         };
         self.create_agent_in_worktree_for(&repo, spec, vec![agent]);
     }
@@ -852,11 +855,13 @@ impl AppState {
 
     /// Populate and open the branch chooser for `repo` (the new agent's repo).
     pub(crate) fn open_branch_chooser(&mut self, repo: &crate::workspace::Repository) {
-        let branches = crate::worktree::list_local_branches(&repo.root);
+        let branches = crate::worktree::list_chooser_branches(&repo.root);
         let default_base = crate::worktree::default_base_branch(&repo.root);
+        let graphite = crate::worktree::graphite_is_tracked(&repo.root);
         self.branch_chooser = BranchChooserState {
             branches,
             default_base,
+            graphite,
             query: String::new(),
             selected: 0,
             scroll: 0,

@@ -859,14 +859,20 @@ pub(crate) struct NewAgentFlow {
 }
 
 /// State for the branch chooser overlay: a fuzzy-filtered list of the chosen
-/// repo's local branches. Picking a match checks it out in a new worktree;
-/// typing a new name creates that branch off `default_base`.
+/// repo's branches. In a plain git repo, picking a match checks it out in a new
+/// worktree and typing a new name creates that branch off `default_base`. In a
+/// Graphite-tracked repo (`graphite`), the list is the stack graph and the
+/// chooser acts as a base picker: the chosen branch becomes the parent of a
+/// fresh agent branch stacked onto it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BranchChooserState {
-    /// All local branch names, before filtering.
-    pub branches: Vec<String>,
+    /// All branch rows, before filtering. Rows carry Graphite stack-graph art
+    /// when the repo is gt-tracked; otherwise just plain names.
+    pub branches: Vec<crate::worktree::BranchRow>,
     /// Default base for a newly typed branch name (e.g. "main").
     pub default_base: String,
+    /// Whether the chosen repo is Graphite-tracked (drives base-picker semantics).
+    pub graphite: bool,
     /// Current fuzzy-search query / new-branch name.
     pub query: String,
     /// Selected index into the currently filtered rows.

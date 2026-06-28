@@ -525,7 +525,10 @@ impl App {
             }
         }
 
-        let command = match &branch {
+        // Build the worktree-add command and, when it creates a *new* branch,
+        // remember the base so we can stack it in Graphite afterward. A direct
+        // checkout of an existing branch creates no new branch and is not stacked.
+        let (command, stack_base) = match &branch {
             AgentBranchSpec::Existing(branch_name) => {
                 // A branch can only be checked out by one worktree at a time. The
                 // default branch is almost always already checked out by the
@@ -535,42 +538,61 @@ impl App {
                     crate::worktree::branch_checked_out_anywhere(&repo.root, branch_name),
                     Ok(true)
                 ) {
-                    crate::worktree::build_worktree_add_new_branch_command(
-                        &repo.root,
-                        &checkout_path,
-                        &name,
-                        branch_name,
+                    (
+                        crate::worktree::build_worktree_add_new_branch_command(
+                            &repo.root,
+                            &checkout_path,
+                            &name,
+                            branch_name,
+                        ),
+                        Some(branch_name.clone()),
                     )
                 } else {
-                    crate::worktree::build_worktree_add_existing_branch_command(
-                        &repo.root,
-                        &checkout_path,
-                        branch_name,
+                    (
+                        crate::worktree::build_worktree_add_existing_branch_command(
+                            &repo.root,
+                            &checkout_path,
+                            branch_name,
+                        ),
+                        None,
                     )
                 }
             }
             AgentBranchSpec::New {
                 name: branch_name,
                 base,
-            } => crate::worktree::build_worktree_add_new_branch_command(
-                &repo.root,
-                &checkout_path,
-                branch_name,
-                base,
+            } => (
+                crate::worktree::build_worktree_add_new_branch_command(
+                    &repo.root,
+                    &checkout_path,
+                    branch_name,
+                    base,
+                ),
+                Some(base.clone()),
             ),
-            AgentBranchSpec::NewFromAgentName { base } => {
+            AgentBranchSpec::NewFromAgentName { base } => (
                 crate::worktree::build_worktree_add_new_branch_command(
                     &repo.root,
                     &checkout_path,
                     &name,
                     base,
-                )
-            }
+                ),
+                Some(base.clone()),
+            ),
         };
         if let Err(err) = crate::worktree::run_worktree_command(&command) {
             tracing::warn!(error = %err, "create-agent worktree add failed");
             self.set_transient_diagnostic(format!("create agent failed: {err}"));
             return;
+        }
+
+        // Best-effort: stack the new branch onto its base in Graphite so it joins
+        // the stack. Gated on the repo actually being gt-tracked; failures are
+        // logged and ignored — the git branch is correct regardless.
+        if let Some(base) = stack_base {
+            if crate::worktree::graphite_is_tracked(&repo.root) {
+                crate::worktree::graphite_track(&checkout_path, &base);
+            }
         }
 
         // Inherit local gitignored setup (build config, env files, ...).
