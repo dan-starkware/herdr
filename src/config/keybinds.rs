@@ -304,6 +304,7 @@ pub struct Keybinds {
     pub reload_config: ActionKeybinds,
     pub open_notification_target: ActionKeybinds,
     pub open_repo_chooser: ActionKeybinds,
+    pub new_agent: ActionKeybinds,
     pub previous_workspace: ActionKeybinds,
     pub next_workspace: ActionKeybinds,
     pub previous_agent: ActionKeybinds,
@@ -467,6 +468,7 @@ impl Config {
             reload_config: empty_action!(),
             open_notification_target: empty_action!(),
             open_repo_chooser: empty_action!(),
+            new_agent: empty_action!(),
             previous_workspace: empty_action!(),
             next_workspace: empty_action!(),
             previous_agent: empty_action!(),
@@ -594,6 +596,7 @@ impl Config {
                 source
             );
             apply_action!(keybinds.open_repo_chooser, open_repo_chooser, source);
+            apply_action!(keybinds.new_agent, new_agent, source);
             apply_action!(keybinds.previous_workspace, previous_workspace, source);
             apply_action!(keybinds.next_workspace, next_workspace, source);
             apply_action!(keybinds.previous_agent, previous_agent, source);
@@ -1407,6 +1410,12 @@ fn is_unmodified_printable(combo: KeyCombo) -> bool {
 mod tests {
     use super::*;
     use crate::{config::Config, input::TerminalKey};
+
+    #[test]
+    fn new_agent_is_bound_by_default() {
+        let keybinds = Config::default().keybinds();
+        assert_eq!(keybinds.new_agent.bindings.len(), 1);
+    }
 
     fn binding_triggers(bindings: &ActionKeybinds) -> Vec<BindingTrigger> {
         bindings

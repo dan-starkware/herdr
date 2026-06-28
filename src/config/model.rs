@@ -332,6 +332,8 @@ pub struct KeysConfig {
     pub open_notification_target: BindingConfig,
     /// Open the repository chooser to open a repo as a workspace. Default: "prefix+shift+o".
     pub open_repo_chooser: BindingConfig,
+    /// Start the new-agent flow (repo → branch → worktree agent). Default: "prefix+a".
+    pub new_agent: BindingConfig,
     /// Select the previous workspace. Unset by default.
     pub previous_workspace: BindingConfig,
     /// Select the next workspace. Unset by default.
@@ -454,6 +456,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     open_repo_chooser: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    new_agent: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     previous_workspace: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_workspace: Option<BindingConfig>,
@@ -563,6 +567,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(reload_config);
         apply_field!(open_notification_target);
         apply_field!(open_repo_chooser);
+        apply_field!(new_agent);
         apply_field!(previous_workspace);
         apply_field!(next_workspace);
         apply_field!(previous_agent);
@@ -662,6 +667,7 @@ impl KeysConfig {
         copy_effective_action_field!(reload_config, keybinds.reload_config);
         copy_effective_action_field!(open_notification_target, keybinds.open_notification_target);
         copy_effective_action_field!(open_repo_chooser, keybinds.open_repo_chooser);
+        copy_effective_action_field!(new_agent, keybinds.new_agent);
         copy_effective_action_field!(previous_workspace, keybinds.previous_workspace);
         copy_effective_action_field!(next_workspace, keybinds.next_workspace);
         copy_effective_action_field!(previous_agent, keybinds.previous_agent);
@@ -921,6 +927,7 @@ impl Default for KeysConfig {
             reload_config: BindingConfig::one("prefix+shift+r"),
             open_notification_target: BindingConfig::one("prefix+o"),
             open_repo_chooser: BindingConfig::one("prefix+shift+o"),
+            new_agent: BindingConfig::one("prefix+a"),
             previous_workspace: BindingConfig::empty(),
             next_workspace: BindingConfig::empty(),
             previous_agent: BindingConfig::empty(),

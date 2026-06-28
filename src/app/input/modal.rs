@@ -69,6 +69,7 @@ pub(super) fn modal_action_from_buttons<A: Copy>(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GlobalMenuAction {
+    NewAgent,
     OpenRepo,
     Detach,
     WhatsNew,
@@ -79,6 +80,7 @@ pub(crate) enum GlobalMenuAction {
 
 pub(super) fn global_menu_actions(state: &AppState) -> Vec<GlobalMenuAction> {
     let mut actions = vec![
+        GlobalMenuAction::NewAgent,
         GlobalMenuAction::OpenRepo,
         GlobalMenuAction::Settings,
         GlobalMenuAction::Keybinds,
@@ -125,6 +127,10 @@ pub(super) fn request_detach(state: &mut AppState) {
 
 pub(super) fn apply_global_menu_action(state: &mut AppState, action: GlobalMenuAction) {
     match action {
+        GlobalMenuAction::NewAgent => {
+            state.request_start_new_agent_flow = true;
+            leave_modal(state);
+        }
         GlobalMenuAction::OpenRepo => state.open_repo_chooser(),
         GlobalMenuAction::Detach => {
             leave_modal(state);
@@ -931,6 +937,13 @@ mod tests {
 
     use super::super::{capture_snapshot, state_with_workspaces};
     use super::*;
+
+    #[test]
+    fn global_menu_new_agent_requests_flow() {
+        let mut state = AppState::test_new();
+        apply_global_menu_action(&mut state, GlobalMenuAction::NewAgent);
+        assert!(state.request_start_new_agent_flow);
+    }
 
     fn config_env_lock() -> &'static std::sync::Mutex<()> {
         crate::config::test_config_env_lock()

@@ -197,7 +197,13 @@ impl AppState {
     }
 
     pub(crate) fn global_menu_labels(&self) -> Vec<&'static str> {
-        let mut labels = vec!["open repo", "settings", "keybinds", "reload config"];
+        let mut labels = vec![
+            "new agent",
+            "open repo",
+            "settings",
+            "keybinds",
+            "reload config",
+        ];
         if self.update_available.is_some() {
             labels.push("update ready");
         } else if self.latest_release_notes_available {
@@ -545,10 +551,30 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 3,
+            menu.y + 4,
         ));
 
         assert_eq!(app.state.mode, Mode::KeybindHelp);
+    }
+
+    #[test]
+    fn clicking_new_agent_menu_item_requests_flow() {
+        let mut app = app_for_mouse_test();
+        let launcher = app.state.global_launcher_rect();
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            launcher.x,
+            launcher.y,
+        ));
+
+        let menu = app.state.global_menu_rect();
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            menu.x + 2,
+            menu.y + 1,
+        ));
+
+        assert!(app.state.request_start_new_agent_flow);
     }
 
     #[test]
@@ -565,7 +591,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 1,
+            menu.y + 2,
         ));
 
         assert_eq!(app.state.mode, Mode::RepoChooser);
@@ -585,7 +611,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 2,
+            menu.y + 3,
         ));
 
         assert_eq!(app.state.mode, Mode::Settings);
@@ -605,7 +631,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 4,
+            menu.y + 5,
         ));
 
         assert!(app.state.request_reload_config);
@@ -628,6 +654,7 @@ mod tests {
         assert_eq!(
             app.state.global_menu_labels(),
             vec![
+                "new agent",
                 "open repo",
                 "settings",
                 "keybinds",
@@ -654,6 +681,7 @@ mod tests {
         assert_eq!(
             app.state.global_menu_labels(),
             vec![
+                "new agent",
                 "open repo",
                 "settings",
                 "keybinds",
@@ -666,7 +694,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 5,
+            menu.y + 6,
         ));
 
         assert!(app.state.detach_requested);
@@ -682,6 +710,7 @@ mod tests {
         assert_eq!(
             app.state.global_menu_labels(),
             vec![
+                "new agent",
                 "open repo",
                 "settings",
                 "keybinds",

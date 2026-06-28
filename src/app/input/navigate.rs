@@ -611,6 +611,7 @@ pub(crate) enum NavigateAction {
     ReloadConfig,
     OpenNotificationTarget,
     OpenRepoChooser,
+    NewAgent,
     Detach,
     OpenNavigator,
 }
@@ -717,6 +718,7 @@ fn action_for_key(
             NavigateAction::OpenNotificationTarget,
         ),
         (&kb.open_repo_chooser, NavigateAction::OpenRepoChooser),
+        (&kb.new_agent, NavigateAction::NewAgent),
         (&kb.detach, NavigateAction::Detach),
         (&kb.goto, NavigateAction::OpenNavigator),
     ] {
@@ -950,6 +952,7 @@ pub(super) fn execute_navigate_action_in_context(
             }
         }
         NavigateAction::OpenRepoChooser => state.open_repo_chooser(),
+        NavigateAction::NewAgent => state.request_start_new_agent_flow = true,
         NavigateAction::Detach => {
             super::modal::request_detach(state);
             leave_navigate_mode(state);
