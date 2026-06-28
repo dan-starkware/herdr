@@ -6,6 +6,7 @@
 - Added a repository chooser to open a repository as a new workspace, reachable from the global menu or with `prefix+shift+o`.
 - Added a "new agent" flow that picks a repository, a branch, then an agent (from all detectable agents, default claude) and launches it in its own git worktree, reachable from the global menu or with `prefix+a`.
 - New agent worktrees now symlink `.cargo/config.toml` from the source checkout by default (configurable via `[worktrees].agent_symlink_paths`), so worktree agents in repos with git-ignored build config can build.
+- Restoring a session now re-runs a pane's original launch command when there is no resumable agent conversation, instead of dropping to a plain shell, so agents come back as what was running.
 
 ### Fixed
 - Native Windows clients running inside Alacritty now preserve mouse reports and `ctrl+j` input instead of leaking mouse escape sequences into panes. `shift+enter` remains dependent on whether the outer terminal reports it as a distinct modified Enter key. (#792)

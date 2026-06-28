@@ -559,14 +559,25 @@ fn restore_tab(
             continue;
         }
 
-        let runtime_result = {
-            #[cfg(unix)]
-            if let Some(imported) = imported_runtime {
-                TerminalRuntime::from_handoff_fd(
-                    crate::handoff_runtime::ImportedHandoffRuntime {
-                        master_fd: imported.master_fd,
-                        state: imported.state.with_pane_id(*id),
-                    },
+        // On a cold restore (no live handoff) of a pane that had an explicit
+        // launch command and no resumable agent session, re-run that command
+        // fresh instead of dropping to a shell, so "what was running there"
+        // comes back. Resumable agents are handled above; handoff keeps its
+        // live process.
+        let relaunch_argv: Option<&[String]> = if was_imported {
+            None
+        } else {
+            saved_launch_argv.as_deref()
+        };
+        let spawn_restored_runtime = |relaunch_argv: Option<&[String]>| {
+            if let Some(argv) = relaunch_argv {
+                TerminalRuntime::spawn_argv_command(
+                    *id,
+                    rows,
+                    cols,
+                    cwd.clone(),
+                    argv,
+                    &launch_env,
                     runtime_context.scrollback_limit_bytes,
                     crate::terminal_theme::TerminalTheme::default(),
                     runtime_context.events.clone(),
@@ -589,23 +600,28 @@ fn restore_tab(
                     runtime_context.render_dirty.clone(),
                 )
             }
-
-            #[cfg(not(unix))]
-            {
-                TerminalRuntime::spawn_with_initial_history(
-                    *id,
-                    rows,
-                    cols,
-                    cwd.clone(),
+        };
+        let runtime_result = {
+            #[cfg(unix)]
+            if let Some(imported) = imported_runtime {
+                TerminalRuntime::from_handoff_fd(
+                    crate::handoff_runtime::ImportedHandoffRuntime {
+                        master_fd: imported.master_fd,
+                        state: imported.state.with_pane_id(*id),
+                    },
                     runtime_context.scrollback_limit_bytes,
                     crate::terminal_theme::TerminalTheme::default(),
-                    runtime_context.shell_config,
-                    &launch_env,
-                    startup.initial_history_ansi,
                     runtime_context.events.clone(),
                     runtime_context.render_notify.clone(),
                     runtime_context.render_dirty.clone(),
                 )
+            } else {
+                spawn_restored_runtime(relaunch_argv)
+            }
+
+            #[cfg(not(unix))]
+            {
+                spawn_restored_runtime(relaunch_argv)
             }
         };
 
@@ -613,9 +629,13 @@ fn restore_tab(
             Ok(runtime) => {
                 let terminal_id = TerminalId::alloc();
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
-                if was_imported {
-                    if let Some(argv) = saved_launch_argv {
-                        terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
+                if let Some(argv) = saved_launch_argv {
+                    // Keep the launch command so the next restore can relaunch it
+                    // again. Handoff additionally respawns a shell when the
+                    // handed-off process exits.
+                    terminal = terminal.with_launch_argv(argv);
+                    if was_imported {
+                        terminal = terminal.with_respawn_shell_on_exit();
                     }
                 }
                 if let Some(label) = saved_label {
@@ -1631,6 +1651,59 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restore_relaunches_pane_launch_argv_on_cold_restore() {
+        // A pane that had an explicit launch command, no resumable agent session,
+        // and no live handoff must re-run that command on restore (not a shell).
+        let (mut snapshot, _history) = snapshot_with_saved_pane_history();
+        if let Some(pane) = snapshot.workspaces[0].tabs[0].panes.get_mut(&0) {
+            pane.launch_argv = Some(vec![
+                "sh".into(),
+                "-c".into(),
+                "printf RELAUNCHED_AGENT; sleep 5".into(),
+            ]);
+        }
+        let (events, _events_rx) = mpsc::channel(8);
+        let render_notify = Arc::new(Notify::new());
+        let render_dirty = Arc::new(AtomicBool::new(false));
+
+        let (_workspaces, _terminals, runtimes) = restore(
+            &snapshot,
+            None, // no history: any output must come from the relaunched command
+            5,
+            40,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            render_notify,
+            render_dirty,
+        );
+        let runtime = runtimes
+            .values()
+            .next()
+            .expect("restored runtime should exist");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut seen = false;
+        while std::time::Instant::now() < deadline {
+            if runtime
+                .recent_unwrapped_text(20)
+                .contains("RELAUNCHED_AGENT")
+            {
+                seen = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            seen,
+            "cold restore should relaunch the pane's launch_argv, not open a shell"
+        );
     }
 
     fn snapshot_with_saved_pane_history() -> (SessionSnapshot, SessionHistorySnapshot) {
