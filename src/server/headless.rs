@@ -557,6 +557,21 @@ impl HeadlessServer {
                 crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
             }
 
+            if let Some(ws_idx) = self.app.state.request_new_agent_worktree.take() {
+                self.app.create_agent_in_worktree(ws_idx);
+                needs_render = true;
+                needs_full_render = true;
+                crate::render_prof::event("full_render_cause.deferred_new_agent_worktree");
+            }
+
+            if self.app.state.request_start_new_agent_flow {
+                self.app.state.request_start_new_agent_flow = false;
+                self.app.state.open_new_agent_flow();
+                needs_render = true;
+                needs_full_render = true;
+                crate::render_prof::event("full_render_cause.deferred_new_agent_flow");
+            }
+
             if self.app.state.request_submit_worktree_create {
                 self.app.state.request_submit_worktree_create = false;
                 self.app.start_worktree_add();
