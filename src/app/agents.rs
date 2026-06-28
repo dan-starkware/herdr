@@ -644,7 +644,11 @@ impl App {
                     .cloned()
                 {
                     if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
-                        terminal.set_agent_name(name.clone());
+                        // The worktree slug labels the pane border via the
+                        // manual label, but it is deliberately not claimed as
+                        // the agent name: doing so shadows the detected agent
+                        // type ("claude", "codex", ...) in the agents panel,
+                        // where the workspace name already carries the slug.
                         terminal.set_manual_label(name);
                     }
                 }

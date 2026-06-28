@@ -1010,6 +1010,69 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn create_agent_in_worktree_does_not_claim_worktree_slug_as_agent_name() {
+        let repo = create_committed_repo("create-agent-worktree-name-repo");
+        let worktree_root = unique_temp_path("create-agent-worktree-name-root");
+
+        let mut app = app_for_worktree_tests();
+        app.state.worktree_directory = worktree_root.clone();
+        app.state.agent_worktree_command = vec!["sh".into()];
+
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("source")];
+        app.state.workspaces[0].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "repo-key".into(),
+            checkout_key: repo.display().to_string(),
+            label: "herdr".into(),
+            repo_root: repo.clone(),
+            is_linked_worktree: false,
+        });
+        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: repo.clone(),
+            checkout_path: repo.clone(),
+            is_linked_worktree: false,
+        });
+
+        app.create_agent_in_worktree(0);
+        assert_eq!(app.state.workspaces.len(), 2);
+
+        let ws = &app.state.workspaces[1];
+        let pane_id = ws
+            .active_tab()
+            .expect("agent workspace has a tab")
+            .layout
+            .focused();
+        let terminal_id = ws
+            .terminal_id(pane_id)
+            .expect("agent pane has a terminal")
+            .clone();
+        let terminal = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("agent terminal exists");
+
+        // The worktree slug identifies the workspace (line 1 of the agents panel)
+        // and labels the pane border, but it must NOT be claimed as the agent
+        // name. Claiming it shadows the detected agent type ("claude", "codex",
+        // ...) in the agents panel, which is what we want to surface there.
+        assert_eq!(terminal.agent_name, None);
+        assert_eq!(terminal.manual_label.as_deref(), Some("herdr-1"));
+
+        let checkout = ws
+            .worktree_space()
+            .expect("agent workspace is a linked worktree")
+            .checkout_path
+            .clone();
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, true);
+        let _ = crate::worktree::run_worktree_command(&remove);
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&worktree_root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn create_agent_for_existing_branch_checks_it_out_in_worktree() {
         let repo = create_committed_repo("create-agent-existing-branch-repo");
         run_git(&repo, &["branch", "feature/login"]);
