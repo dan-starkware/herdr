@@ -430,7 +430,10 @@ fn leftover_worktree_checkout_matches_repo(repo_root: &Path, path: &Path) -> boo
     canonical_or_original(&gitdir).starts_with(canonical_or_original(&worktrees_dir))
 }
 
-fn git_common_worktrees_dir(repo_root: &Path) -> Option<PathBuf> {
+/// The repo's shared git directory (`--git-common-dir`), resolved to an absolute
+/// path. For a linked worktree this is the main checkout's `.git`, so per-repo
+/// state (worktree admin dirs, Graphite metadata) is found from any worktree.
+fn git_common_dir(repo_root: &Path) -> Option<PathBuf> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -445,16 +448,18 @@ fn git_common_worktrees_dir(repo_root: &Path) -> Option<PathBuf> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let common_dir = stdout.trim();
     if common_dir.is_empty() {
-        None
-    } else {
-        let common_dir = PathBuf::from(common_dir);
-        let common_dir = if common_dir.is_absolute() {
-            common_dir
-        } else {
-            repo_root.join(common_dir)
-        };
-        Some(common_dir.join("worktrees"))
+        return None;
     }
+    let common_dir = PathBuf::from(common_dir);
+    Some(if common_dir.is_absolute() {
+        common_dir
+    } else {
+        repo_root.join(common_dir)
+    })
+}
+
+fn git_common_worktrees_dir(repo_root: &Path) -> Option<PathBuf> {
+    Some(git_common_dir(repo_root)?.join("worktrees"))
 }
 
 pub(crate) fn parse_worktree_list_porcelain(output: &str) -> Vec<ExistingWorktree> {
@@ -655,10 +660,19 @@ pub(crate) fn list_chooser_branches(repo_root: &Path) -> Vec<BranchRow> {
         .collect()
 }
 
-/// Whether Graphite already tracks branches in this repo (has `branch-metadata`
-/// refs). Gating every `gt` call on this avoids Graphite's interactive
-/// auto-setup in repos that don't use it.
+/// Whether Graphite is initialized for this repo. Graphite (gt >= ~1.x) stores
+/// its state in the repo's shared git dir as `.graphite_repo_config` plus a
+/// `.graphite_metadata.db` SQLite file; older versions used `refs/branch-metadata`
+/// refs. We accept any of these markers. Gating every `gt` call on this avoids
+/// Graphite's interactive auto-setup in repos that don't use it.
 pub(crate) fn graphite_is_tracked(repo_root: &Path) -> bool {
+    if let Some(common_dir) = git_common_dir(repo_root) {
+        if common_dir.join(".graphite_repo_config").exists()
+            || common_dir.join(".graphite_metadata.db").exists()
+        {
+            return true;
+        }
+    }
     std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -1264,6 +1278,17 @@ prunable stale
         assert!(rows
             .iter()
             .any(|row| row.name == "main" || row.name == "master"));
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn graphite_is_tracked_true_with_repo_config_file() {
+        // gt >= ~1.x marks an initialized repo with a .graphite_repo_config in
+        // the shared git dir (no branch-metadata refs).
+        let repo = create_committed_repo("graphite-config-file");
+        assert!(!graphite_is_tracked(&repo));
+        std::fs::write(repo.join(".git").join(".graphite_repo_config"), "{}\n").unwrap();
+        assert!(graphite_is_tracked(&repo));
         let _ = std::fs::remove_dir_all(repo);
     }
 
