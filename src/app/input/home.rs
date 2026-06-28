@@ -529,21 +529,18 @@ impl AppState {
     }
 
     fn set_home_focus(&mut self, focus: FocusPane) {
-        // Leaving the Agents pane abandons an in-progress "create new agent" flow
-        // — the repo picker (`n`) and the branch picker (Mode::Review) both
-        // collapse back to the agents list, which then highlights the agent shown
-        // in Main (so you land back on what you can actually see).
+        // Leaving the Agents pane always returns it to the agents list and snaps
+        // the highlight back to the agent shown in Main, so you land back on what
+        // you can actually see. Its sub-panes — the repo picker (`n`) and the
+        // branch picker (Mode::Review) — collapse too, abandoning any in-progress
+        // "create new agent" flow.
         if focus != FocusPane::Agents && self.control.focus == FocusPane::Agents {
-            let creating = self.control.agents_view == AgentsPaneView::Repos
-                || self.mode == Mode::Review;
-            if creating {
-                self.control.agents_view = AgentsPaneView::Agents;
-                if self.mode == Mode::Review {
-                    self.mode = Mode::Home;
-                    self.control.review = None;
-                }
-                self.sync_selected_agent_to_main();
+            self.control.agents_view = AgentsPaneView::Agents;
+            if self.mode == Mode::Review {
+                self.mode = Mode::Home;
+                self.control.review = None;
             }
+            self.sync_selected_agent_to_main();
         }
         // Leaving the PR pane returns it to the people list (it goes back to the
         // persons display when it becomes inactive).
@@ -1056,6 +1053,46 @@ mod tests {
         assert_eq!(app.state.mode, Mode::Home);
         assert!(app.state.control.review.is_none());
         assert_eq!(app.state.control.agents_view, AgentsPaneView::Agents);
+    }
+
+    #[test]
+    fn leaving_agents_list_snaps_highlight_back_to_active_agent() {
+        let mut state = AppState::test_new();
+        state.mode = Mode::Home;
+        state.workspaces = vec![
+            crate::workspace::Workspace::test_new("a"),
+            crate::workspace::Workspace::test_new("b"),
+        ];
+        for ws in &mut state.workspaces {
+            ws.attach_test_worktree();
+        }
+        state.ensure_test_terminals();
+        let terminal_ids: Vec<_> = state
+            .workspaces
+            .iter()
+            .map(|ws| {
+                let pane = ws.tabs[0].root_pane;
+                ws.tabs[0].panes[&pane].attached_terminal_id.clone()
+            })
+            .collect();
+        for (i, terminal_id) in terminal_ids.iter().enumerate() {
+            state
+                .terminals
+                .get_mut(terminal_id)
+                .unwrap()
+                .set_agent_name(format!("agent{i}"));
+        }
+        // Agent 0 fills Main; the user has navigated the list's highlight to 1
+        // without activating it.
+        state.active = Some(0);
+        state.control.focus = FocusPane::Agents;
+        state.control.selected_agent = 1;
+
+        // Leaving the Agents pane snaps the highlight back to the visible agent,
+        // so returning later lands on what is actually shown in Main.
+        assert!(state.apply_home_key(alt('k')));
+        assert_eq!(state.control.focus, FocusPane::Prs);
+        assert_eq!(state.control.selected_agent, 0);
     }
 
     #[test]
