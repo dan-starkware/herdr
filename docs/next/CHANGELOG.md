@@ -4,7 +4,7 @@
 
 ### Added
 - Added a repository chooser to open a repository as a new workspace, reachable from the global menu or with `prefix+shift+o`.
-- Added a "new agent" flow that picks a repository then a branch and launches an agent in its own git worktree, reachable from the global menu or with `prefix+a`.
+- Added a "new agent" flow that picks a repository, a branch, then an agent (from all detectable agents, default claude) and launches it in its own git worktree, reachable from the global menu or with `prefix+a`.
 - New agent worktrees now symlink `.cargo/config.toml` from the source checkout by default (configurable via `[worktrees].agent_symlink_paths`), so worktree agents in repos with git-ignored build config can build.
 
 ### Fixed

@@ -5,6 +5,7 @@ use ratatui::{
     Frame,
 };
 
+mod agent_chooser;
 pub(crate) mod branch_chooser;
 mod dialogs;
 mod keybind_help;
@@ -22,6 +23,7 @@ mod status;
 mod tabs;
 mod widgets;
 
+use self::agent_chooser::render_agent_chooser_overlay;
 use self::branch_chooser::render_branch_chooser_overlay;
 use self::dialogs::{
     render_confirm_close_overlay, render_new_linked_worktree_overlay,
@@ -430,6 +432,7 @@ pub fn render_with_runtime_registry(
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),
         Mode::RepoChooser => render_repo_chooser_overlay(app, frame),
         Mode::BranchChooser => render_branch_chooser_overlay(app, frame),
+        Mode::AgentChooser => render_agent_chooser_overlay(app, frame),
         Mode::Terminal => {}
     }
 }

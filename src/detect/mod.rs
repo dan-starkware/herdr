@@ -109,6 +109,36 @@ pub fn agent_label(agent: Agent) -> &'static str {
     }
 }
 
+/// All known agents, ordered for the new-agent picker: common coding agents
+/// first (claude default), then the rest. Labels double as launch commands.
+pub const ALL_AGENTS: [Agent; 19] = [
+    Agent::Claude,
+    Agent::Codex,
+    Agent::Gemini,
+    Agent::Droid,
+    Agent::OpenCode,
+    Agent::GithubCopilot,
+    Agent::Cursor,
+    Agent::Amp,
+    Agent::Grok,
+    Agent::Kimi,
+    Agent::Kilo,
+    Agent::Pi,
+    Agent::Omp,
+    Agent::Hermes,
+    Agent::Qodercli,
+    Agent::Kiro,
+    Agent::Cline,
+    Agent::Devin,
+    Agent::Antigravity,
+];
+
+/// Display labels for [`ALL_AGENTS`], in order. Used by the new-agent picker;
+/// each label doubles as the launch command.
+pub fn all_agent_labels() -> Vec<&'static str> {
+    ALL_AGENTS.iter().map(|agent| agent_label(*agent)).collect()
+}
+
 pub fn parse_agent_label(agent: &str) -> Option<Agent> {
     let name = normalized_agent_lookup_name(agent);
     match name.as_str() {

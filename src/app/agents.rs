@@ -488,22 +488,26 @@ impl App {
             root: space.repo_root.clone(),
             label: space.label.clone(),
         };
-        // Quick path (context menu): a new branch named after the agent, off HEAD.
+        // Quick path (context menu): a new branch named after the agent, off
+        // HEAD, running the configured default agent.
+        let argv = self.state.agent_worktree_command.clone();
         self.create_agent_in_worktree_for(
             &repo,
             AgentBranchSpec::NewFromAgentName {
                 base: "HEAD".into(),
             },
+            argv,
         );
     }
 
-    /// Create a worktree for `repo` per `branch`, launch the configured agent in
-    /// it as its own workspace, and tag it for kill-time cleanup. Diagnostics
-    /// surface through `config_diagnostic`.
+    /// Create a worktree for `repo` per `branch`, launch `argv` in it as its own
+    /// workspace, and tag it for kill-time cleanup. Diagnostics surface through
+    /// `config_diagnostic`.
     pub(crate) fn create_agent_in_worktree_for(
         &mut self,
         repo: &crate::workspace::Repository,
         branch: AgentBranchSpec,
+        argv: Vec<String>,
     ) {
         let name = self.default_agent_worktree_name(&repo.label);
         let checkout_path = crate::worktree::default_checkout_path(
@@ -570,21 +574,20 @@ impl App {
             repo_root: repo.root.clone(),
             is_linked_worktree: false,
         };
-        self.finish_create_agent_in_worktree(&space, &checkout_path, name);
+        self.finish_create_agent_in_worktree(&space, &checkout_path, name, argv);
     }
 
-    /// Spawn the agent in the freshly created worktree as its own workspace and
-    /// tag it with worktree membership so kill-time cleanup can find it.
+    /// Spawn `argv` in the freshly created worktree as its own workspace and tag
+    /// it with worktree membership so kill-time cleanup can find it.
     fn finish_create_agent_in_worktree(
         &mut self,
         space: &crate::workspace::GitSpaceMetadata,
         checkout_path: &std::path::Path,
         name: String,
+        argv: Vec<String>,
     ) {
-        let argv = self.state.agent_worktree_command.clone();
         if argv.is_empty() {
-            self.state.config_diagnostic =
-                Some("create agent: worktrees.agent_command is empty".into());
+            self.state.config_diagnostic = Some("create agent: no agent command selected".into());
             return;
         }
         let (rows, cols) = self.state.estimate_pane_size();

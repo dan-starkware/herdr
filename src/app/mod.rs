@@ -549,9 +549,9 @@ impl App {
             navigator: state::NavigatorState::default(),
             repo_chooser: state::RepoChooserState::default(),
             branch_chooser: state::BranchChooserState::default(),
+            agent_chooser: state::AgentChooserState::default(),
             new_agent_flow: None,
             request_start_new_agent_flow: false,
-            request_new_agent_branch_choice: None,
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
@@ -936,21 +936,6 @@ impl App {
             if self.state.request_start_new_agent_flow {
                 self.state.request_start_new_agent_flow = false;
                 self.state.open_new_agent_flow();
-                needs_render = true;
-            }
-
-            if let Some(choice) = self.state.request_new_agent_branch_choice.take() {
-                if let Some(repo) = self.state.new_agent_flow.take().and_then(|flow| flow.repo) {
-                    let spec = match choice {
-                        crate::ui::branch_chooser::BranchChoice::Existing(name) => {
-                            crate::app::agents::AgentBranchSpec::Existing(name)
-                        }
-                        crate::ui::branch_chooser::BranchChoice::New { name, base } => {
-                            crate::app::agents::AgentBranchSpec::New { name, base }
-                        }
-                    };
-                    self.create_agent_in_worktree_for(&repo, spec);
-                }
                 needs_render = true;
             }
 
@@ -1681,6 +1666,9 @@ impl App {
             }
             Mode::BranchChooser => {
                 self.handle_branch_chooser_key(key_event);
+            }
+            Mode::AgentChooser => {
+                self.handle_agent_chooser_key(key_event);
             }
             Mode::Terminal => {
                 // Should not be called in terminal mode.

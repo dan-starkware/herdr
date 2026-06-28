@@ -1027,6 +1027,7 @@ mod tests {
         app.create_agent_in_worktree_for(
             &repository,
             crate::app::agents::AgentBranchSpec::Existing("feature/login".into()),
+            vec!["sh".into()],
         );
         assert!(
             app.state.config_diagnostic.is_none(),

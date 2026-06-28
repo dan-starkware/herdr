@@ -7,8 +7,8 @@ use tracing::error;
 
 use crate::app::{
     state::{
-        AppState, BranchChooserState, DragState, DragTarget, Mode, NavigatorTarget, NewAgentFlow,
-        RepoChooserIntent, RepoChooserState,
+        AgentChooserState, AppState, BranchChooserState, DragState, DragTarget, Mode,
+        NavigatorTarget, NewAgentFlow, RepoChooserIntent, RepoChooserState,
     },
     App,
 };
@@ -294,6 +294,55 @@ impl App {
             return true;
         }
 
+        if self.state.mode == Mode::AgentChooser {
+            match mouse.kind {
+                MouseEventKind::Moved => {
+                    if let Some(idx) = self
+                        .state
+                        .agent_chooser_row_index_at(mouse.column, mouse.row)
+                    {
+                        self.state.agent_chooser.selected = idx;
+                        self.state.ensure_agent_chooser_selection_visible();
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(idx) = self
+                        .state
+                        .agent_chooser_row_index_at(mouse.column, mouse.row)
+                    {
+                        self.state.agent_chooser.selected = idx;
+                        self.state.agent_chooser.query.clear();
+                        self.accept_agent_chooser();
+                    } else if !self
+                        .state
+                        .agent_chooser_popup_contains(mouse.column, mouse.row)
+                    {
+                        self.state.open_new_agent_flow();
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    self.state.agent_chooser.scroll =
+                        self.state.agent_chooser.scroll.saturating_sub(3);
+                    self.state.agent_chooser.selected = self.state.agent_chooser.scroll;
+                    self.state.clamp_agent_chooser_selection();
+                }
+                MouseEventKind::ScrollDown => {
+                    let viewport = self.state.agent_chooser_body_rect().height as usize;
+                    let max = self
+                        .state
+                        .agent_chooser_filtered_indices()
+                        .len()
+                        .saturating_sub(viewport);
+                    self.state.agent_chooser.scroll =
+                        self.state.agent_chooser.scroll.saturating_add(3).min(max);
+                    self.state.agent_chooser.selected = self.state.agent_chooser.scroll;
+                    self.state.clamp_agent_chooser_selection();
+                }
+                _ => {}
+            }
+            return true;
+        }
+
         if self.state.mode == Mode::KeybindHelp {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left)
@@ -402,7 +451,10 @@ impl App {
             RepoChooserIntent::OpenWorkspace => self.open_or_switch_workspace_for_repo(repo),
             RepoChooserIntent::NewAgent => {
                 self.state.open_branch_chooser(&repo);
-                self.state.new_agent_flow = Some(NewAgentFlow { repo: Some(repo) });
+                self.state.new_agent_flow = Some(NewAgentFlow {
+                    repo: Some(repo),
+                    branch: None,
+                });
             }
         }
     }
@@ -446,13 +498,88 @@ impl App {
     }
 
     pub(super) fn accept_branch_chooser(&mut self) {
-        if let Some(choice) =
+        let Some(choice) =
             crate::ui::branch_chooser::resolve_branch_choice(&self.state.branch_chooser)
-        {
-            self.state.request_new_agent_branch_choice = Some(choice);
+        else {
+            return;
+        };
+        // Carry the branch into the flow and advance to the agent step.
+        if let Some(flow) = self.state.new_agent_flow.as_mut() {
+            flow.branch = Some(choice);
+            self.state.open_agent_chooser();
+        } else {
+            leave_modal(&mut self.state);
         }
-        // The main loop performs the actual worktree+agent creation.
+    }
+
+    pub(crate) fn handle_agent_chooser_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                if self.state.agent_chooser.query.is_empty() {
+                    // Back a step to the branch chooser.
+                    if let Some(repo) = self
+                        .state
+                        .new_agent_flow
+                        .as_ref()
+                        .and_then(|flow| flow.repo.clone())
+                    {
+                        self.state.open_branch_chooser(&repo);
+                    } else {
+                        leave_modal(&mut self.state);
+                    }
+                } else {
+                    self.state.agent_chooser.query.clear();
+                    self.state.clamp_agent_chooser_selection();
+                }
+            }
+            KeyCode::Enter => self.accept_agent_chooser(),
+            KeyCode::Up => self.state.move_agent_chooser_selection(-1),
+            KeyCode::Down => self.state.move_agent_chooser_selection(1),
+            KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.move_agent_chooser_selection(-1)
+            }
+            KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.move_agent_chooser_selection(1)
+            }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.state.agent_chooser.query.clear();
+                self.state.clamp_agent_chooser_selection();
+            }
+            KeyCode::Backspace => {
+                self.state.agent_chooser.query.pop();
+                self.state.clamp_agent_chooser_selection();
+            }
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.state.agent_chooser.query.push(c);
+                self.state.clamp_agent_chooser_selection();
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn accept_agent_chooser(&mut self) {
+        let Some(agent) = self.state.agent_chooser_selected_agent() else {
+            return;
+        };
+        let flow = self.state.new_agent_flow.take();
         leave_modal(&mut self.state);
+        let Some(flow) = flow else {
+            return;
+        };
+        let (Some(repo), Some(branch)) = (flow.repo, flow.branch) else {
+            return;
+        };
+        let spec = match branch {
+            crate::ui::branch_chooser::BranchChoice::Existing(name) => {
+                crate::app::agents::AgentBranchSpec::Existing(name)
+            }
+            crate::ui::branch_chooser::BranchChoice::New { name, base } => {
+                crate::app::agents::AgentBranchSpec::New { name, base }
+            }
+        };
+        self.create_agent_in_worktree_for(&repo, spec, vec![agent]);
     }
 
     /// Open the picked repository: reuse an existing workspace already rooted at
@@ -597,8 +724,130 @@ impl AppState {
             scroll: 0,
             intent: RepoChooserIntent::NewAgent,
         };
-        self.new_agent_flow = Some(NewAgentFlow { repo: None });
+        self.new_agent_flow = Some(NewAgentFlow {
+            repo: None,
+            branch: None,
+        });
         self.mode = Mode::RepoChooser;
+    }
+
+    /// Populate and open the agent chooser (final step): all known agents, with
+    /// the configured default agent pre-selected.
+    pub(crate) fn open_agent_chooser(&mut self) {
+        let agents: Vec<String> = crate::detect::all_agent_labels()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let default = self
+            .agent_worktree_command
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        let selected = agents.iter().position(|a| *a == default).unwrap_or(0);
+        self.agent_chooser = AgentChooserState {
+            agents,
+            query: String::new(),
+            selected,
+            scroll: 0,
+        };
+        self.ensure_agent_chooser_selection_visible();
+        self.mode = Mode::AgentChooser;
+    }
+
+    /// Indices into `agent_chooser.agents` matching the query (case-insensitive
+    /// substring); empty query matches all.
+    pub(crate) fn agent_chooser_filtered_indices(&self) -> Vec<usize> {
+        let query = self.agent_chooser.query.trim().to_ascii_lowercase();
+        self.agent_chooser
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| query.is_empty() || agent.to_ascii_lowercase().contains(&query))
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    /// The agent label at the current selection within the filtered rows.
+    pub(crate) fn agent_chooser_selected_agent(&self) -> Option<String> {
+        let idx = *self
+            .agent_chooser_filtered_indices()
+            .get(self.agent_chooser.selected)?;
+        self.agent_chooser.agents.get(idx).cloned()
+    }
+
+    pub(crate) fn move_agent_chooser_selection(&mut self, delta: isize) {
+        let count = self.agent_chooser_filtered_indices().len();
+        if count == 0 {
+            self.agent_chooser.selected = 0;
+            self.agent_chooser.scroll = 0;
+            return;
+        }
+        let current = self.agent_chooser.selected.min(count - 1) as isize;
+        self.agent_chooser.selected = (current + delta).clamp(0, count as isize - 1) as usize;
+        self.ensure_agent_chooser_selection_visible();
+    }
+
+    pub(crate) fn clamp_agent_chooser_selection(&mut self) {
+        let count = self.agent_chooser_filtered_indices().len();
+        self.agent_chooser.selected = self.agent_chooser.selected.min(count.saturating_sub(1));
+        self.ensure_agent_chooser_selection_visible();
+    }
+
+    pub(crate) fn ensure_agent_chooser_selection_visible(&mut self) {
+        let viewport = self.agent_chooser_body_rect().height as usize;
+        if viewport == 0 {
+            self.agent_chooser.scroll = 0;
+            return;
+        }
+        let max_scroll = self
+            .agent_chooser_filtered_indices()
+            .len()
+            .saturating_sub(viewport);
+        if self.agent_chooser.selected < self.agent_chooser.scroll {
+            self.agent_chooser.scroll = self.agent_chooser.selected;
+        } else if self.agent_chooser.selected >= self.agent_chooser.scroll.saturating_add(viewport)
+        {
+            self.agent_chooser.scroll = self
+                .agent_chooser
+                .selected
+                .saturating_add(1)
+                .saturating_sub(viewport);
+        }
+        self.agent_chooser.scroll = self.agent_chooser.scroll.min(max_scroll);
+    }
+
+    // The agent chooser reuses the branch chooser's centered-popup geometry
+    // (identical size and layout); these delegate so there is one source of truth.
+    pub(crate) fn agent_chooser_popup_rect(&self) -> Rect {
+        self.branch_chooser_popup_rect()
+    }
+
+    pub(crate) fn agent_chooser_search_rect(&self) -> Rect {
+        self.branch_chooser_search_rect()
+    }
+
+    pub(crate) fn agent_chooser_body_rect(&self) -> Rect {
+        self.branch_chooser_body_rect()
+    }
+
+    pub(crate) fn agent_chooser_footer_rect(&self) -> Rect {
+        self.branch_chooser_footer_rect()
+    }
+
+    pub(crate) fn agent_chooser_popup_contains(&self, col: u16, row: u16) -> bool {
+        self.branch_chooser_popup_contains(col, row)
+    }
+
+    pub(crate) fn agent_chooser_row_index_at(&self, col: u16, row: u16) -> Option<usize> {
+        let body = self.agent_chooser_body_rect();
+        if !rect_contains(body, col, row) {
+            return None;
+        }
+        let idx = self
+            .agent_chooser
+            .scroll
+            .saturating_add(row.saturating_sub(body.y) as usize);
+        (idx < self.agent_chooser_filtered_indices().len()).then_some(idx)
     }
 
     /// Populate and open the branch chooser for `repo` (the new agent's repo).

@@ -768,6 +768,7 @@ pub enum Mode {
     Navigator,
     RepoChooser,
     BranchChooser,
+    AgentChooser,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -853,6 +854,8 @@ pub(crate) enum RepoChooserIntent {
 pub(crate) struct NewAgentFlow {
     /// The repository picked in the repo step, carried into the branch step.
     pub repo: Option<crate::workspace::Repository>,
+    /// The branch picked in the branch step, carried into the agent step.
+    pub branch: Option<crate::ui::branch_chooser::BranchChoice>,
 }
 
 /// State for the branch chooser overlay: a fuzzy-filtered list of the chosen
@@ -865,6 +868,21 @@ pub(crate) struct BranchChooserState {
     /// Default base for a newly typed branch name (e.g. "main").
     pub default_base: String,
     /// Current fuzzy-search query / new-branch name.
+    pub query: String,
+    /// Selected index into the currently filtered rows.
+    pub selected: usize,
+    /// Scroll offset (first visible filtered row).
+    pub scroll: usize,
+}
+
+/// State for the agent chooser overlay: the final step of the new-agent flow.
+/// A fuzzy-filtered list of known agents; the chosen label is the launch
+/// command run in the new worktree.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AgentChooserState {
+    /// Agent labels to choose from (also the launch commands).
+    pub agents: Vec<String>,
+    /// Current fuzzy-search query.
     pub query: String,
     /// Selected index into the currently filtered rows.
     pub selected: usize,
@@ -1391,12 +1409,11 @@ pub struct AppState {
     pub navigator: NavigatorState,
     pub repo_chooser: RepoChooserState,
     pub branch_chooser: BranchChooserState,
-    /// In-flight new-agent flow (repo → branch → worktree agent), if active.
+    pub agent_chooser: AgentChooserState,
+    /// In-flight new-agent flow (repo → branch → agent → worktree), if active.
     pub new_agent_flow: Option<NewAgentFlow>,
     /// Set by a UI action (launcher/keybind) to start the new-agent flow.
     pub request_start_new_agent_flow: bool,
-    /// Set when the branch step resolved a choice for the main loop to act on.
-    pub request_new_agent_branch_choice: Option<crate::ui::branch_chooser::BranchChoice>,
     pub copy_mode: Option<CopyModeState>,
     pub workspace_scroll: usize,
     pub agent_panel_scroll: usize,
@@ -1763,9 +1780,9 @@ impl AppState {
             navigator: NavigatorState::default(),
             repo_chooser: RepoChooserState::default(),
             branch_chooser: BranchChooserState::default(),
+            agent_chooser: AgentChooserState::default(),
             new_agent_flow: None,
             request_start_new_agent_flow: false,
-            request_new_agent_branch_choice: None,
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
@@ -2225,6 +2242,33 @@ mod tests {
         assert_eq!(state.mode, Mode::RepoChooser);
         assert!(state.new_agent_flow.is_some());
         assert_eq!(state.repo_chooser.intent, RepoChooserIntent::NewAgent);
+    }
+
+    #[test]
+    fn open_agent_chooser_preselects_default_agent_and_lists_all() {
+        let mut state = AppState::test_new();
+        // test_new defaults agent_worktree_command to ["claude"].
+        state.open_agent_chooser();
+        assert_eq!(state.mode, Mode::AgentChooser);
+        assert_eq!(
+            state.agent_chooser_selected_agent().as_deref(),
+            Some("claude")
+        );
+        // The full detectable-agent list is offered.
+        assert!(state.agent_chooser.agents.iter().any(|a| a == "codex"));
+        assert!(state.agent_chooser.agents.len() > 5);
+    }
+
+    #[test]
+    fn agent_chooser_filter_narrows_and_selects() {
+        let mut state = AppState::test_new();
+        state.open_agent_chooser();
+        state.agent_chooser.query = "cod".into();
+        state.clamp_agent_chooser_selection();
+        assert_eq!(
+            state.agent_chooser_selected_agent().as_deref(),
+            Some("codex")
+        );
     }
 
     #[test]

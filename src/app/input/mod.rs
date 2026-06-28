@@ -108,6 +108,7 @@ impl App {
                 }
                 Mode::RepoChooser => self.handle_repo_chooser_key(key_event),
                 Mode::BranchChooser => self.handle_branch_chooser_key(key_event),
+                Mode::AgentChooser => self.handle_agent_chooser_key(key_event),
                 Mode::Terminal => unreachable!(),
             },
         }
