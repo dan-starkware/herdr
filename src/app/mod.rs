@@ -856,6 +856,91 @@ impl App {
         self.prefix_input_source = source;
     }
 
+    /// Process the deferred UI request flags that input handlers set on
+    /// [`AppState`]. Both the monolithic loop and the headless server loop call
+    /// this so a newly added request flag is handled in exactly one place and
+    /// can never be wired into one loop but forgotten in the other.
+    ///
+    /// Returns `true` if any request fired, meaning the caller should re-render.
+    /// `request_reload_config` is intentionally NOT handled here: the monolithic
+    /// loop reloads via [`App::reload_config`] while the server reloads via its
+    /// own server-config path, so each caller owns that one flag.
+    pub(crate) fn process_deferred_requests(&mut self) -> bool {
+        let mut handled = false;
+
+        if self.state.request_complete_onboarding {
+            self.state.request_complete_onboarding = false;
+            self.open_settings_from_onboarding();
+            handled = true;
+        }
+
+        if self.state.request_new_workspace {
+            self.state.request_new_workspace = false;
+            self.create_workspace();
+            handled = true;
+        }
+
+        if self.state.request_new_tab {
+            self.state.request_new_tab = false;
+            self.create_tab();
+            handled = true;
+        }
+
+        if let Some(ws_idx) = self.state.request_new_linked_worktree.take() {
+            self.open_new_linked_worktree_dialog(ws_idx);
+            handled = true;
+        }
+
+        if let Some(ws_idx) = self.state.request_open_existing_worktree.take() {
+            self.open_existing_worktree_dialog(ws_idx);
+            handled = true;
+        }
+
+        if let Some(cwd) = self.state.request_new_workspace_cwd.take() {
+            if let Err(err) = self.create_workspace_with_events(cwd, true) {
+                tracing::error!(err = %err, "failed to create workspace at requested cwd");
+                self.state.mode = Mode::Navigate;
+            }
+            handled = true;
+        }
+
+        if let Some(ws_idx) = self.state.request_remove_linked_worktree.take() {
+            self.open_remove_linked_worktree_confirmation(ws_idx);
+            handled = true;
+        }
+
+        if let Some(ws_idx) = self.state.request_new_agent_worktree.take() {
+            self.create_agent_in_worktree(ws_idx);
+            handled = true;
+        }
+
+        if self.state.request_start_new_agent_flow {
+            self.state.request_start_new_agent_flow = false;
+            self.state.open_new_agent_flow();
+            handled = true;
+        }
+
+        if self.state.request_submit_worktree_create {
+            self.state.request_submit_worktree_create = false;
+            self.start_worktree_add();
+            handled = true;
+        }
+
+        if self.state.request_submit_worktree_open {
+            self.state.request_submit_worktree_open = false;
+            self.open_selected_existing_worktree();
+            handled = true;
+        }
+
+        if self.state.request_submit_worktree_remove {
+            self.state.request_submit_worktree_remove = false;
+            self.start_worktree_remove();
+            handled = true;
+        }
+
+        handled
+    }
+
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         if self.input_rx.is_none() {
             self.input_rx = Some(crate::raw_input::spawn_input_reader());
@@ -887,73 +972,7 @@ impl App {
                 needs_render = true;
             }
 
-            if self.state.request_complete_onboarding {
-                self.state.request_complete_onboarding = false;
-                self.open_settings_from_onboarding();
-                needs_render = true;
-            }
-
-            if self.state.request_new_workspace {
-                self.state.request_new_workspace = false;
-                self.create_workspace();
-                needs_render = true;
-            }
-
-            if self.state.request_new_tab {
-                self.state.request_new_tab = false;
-                self.create_tab();
-                needs_render = true;
-            }
-
-            if let Some(ws_idx) = self.state.request_new_linked_worktree.take() {
-                self.open_new_linked_worktree_dialog(ws_idx);
-                needs_render = true;
-            }
-
-            if let Some(ws_idx) = self.state.request_open_existing_worktree.take() {
-                self.open_existing_worktree_dialog(ws_idx);
-                needs_render = true;
-            }
-
-            if let Some(cwd) = self.state.request_new_workspace_cwd.take() {
-                if let Err(err) = self.create_workspace_with_events(cwd, true) {
-                    tracing::error!(err = %err, "failed to create workspace at requested cwd");
-                    self.state.mode = Mode::Navigate;
-                }
-                needs_render = true;
-            }
-
-            if let Some(ws_idx) = self.state.request_remove_linked_worktree.take() {
-                self.open_remove_linked_worktree_confirmation(ws_idx);
-                needs_render = true;
-            }
-
-            if let Some(ws_idx) = self.state.request_new_agent_worktree.take() {
-                self.create_agent_in_worktree(ws_idx);
-                needs_render = true;
-            }
-
-            if self.state.request_start_new_agent_flow {
-                self.state.request_start_new_agent_flow = false;
-                self.state.open_new_agent_flow();
-                needs_render = true;
-            }
-
-            if self.state.request_submit_worktree_create {
-                self.state.request_submit_worktree_create = false;
-                self.start_worktree_add();
-                needs_render = true;
-            }
-
-            if self.state.request_submit_worktree_open {
-                self.state.request_submit_worktree_open = false;
-                self.open_selected_existing_worktree();
-                needs_render = true;
-            }
-
-            if self.state.request_submit_worktree_remove {
-                self.state.request_submit_worktree_remove = false;
-                self.start_worktree_remove();
+            if self.process_deferred_requests() {
                 needs_render = true;
             }
 
@@ -3204,6 +3223,40 @@ mod tests {
         assert_eq!(tab.tab_id, format!("{}:t3", app.state.workspaces[0].id));
         assert_eq!(tab.number, 3);
         assert_eq!(tab.label, "2");
+    }
+
+    #[test]
+    fn process_deferred_requests_consumes_start_new_agent_flow() {
+        // Guards the regression where a request flag was wired into one run loop
+        // but forgotten in the other: both loops now share this method, so a
+        // handled flag must be consumed and report that a re-render is needed.
+        let mut app = test_app();
+        app.state.request_start_new_agent_flow = true;
+
+        assert!(app.process_deferred_requests());
+        assert!(!app.state.request_start_new_agent_flow);
+        assert_eq!(app.state.mode, Mode::RepoChooser);
+        assert_eq!(
+            app.state.repo_chooser.intent,
+            state::RepoChooserIntent::NewAgent
+        );
+    }
+
+    #[test]
+    fn process_deferred_requests_reports_no_work_when_idle() {
+        let mut app = test_app();
+        assert!(!app.process_deferred_requests());
+    }
+
+    #[test]
+    fn process_deferred_requests_leaves_reload_config_to_the_caller() {
+        // reload_config diverges between the monolithic and server loops, so the
+        // shared method must not consume it.
+        let mut app = test_app();
+        app.state.request_reload_config = true;
+
+        assert!(!app.process_deferred_requests());
+        assert!(app.state.request_reload_config);
     }
 
     #[test]
