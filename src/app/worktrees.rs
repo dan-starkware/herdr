@@ -10,7 +10,7 @@ use super::{
 use crate::events::{AppEvent, WorktreeAddResult, WorktreeRemoveResult};
 
 impl App {
-    fn worktree_source_metadata(
+    pub(super) fn worktree_source_metadata(
         &self,
         ws_idx: usize,
     ) -> Result<
@@ -934,6 +934,78 @@ mod tests {
             .into_iter()
             .map(|(_, event)| event.event)
             .collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_agent_in_worktree_creates_checkout_symlinks_and_membership() {
+        let repo = create_committed_repo("create-agent-worktree-repo");
+        // A gitignored local file the agent should inherit via symlink.
+        std::fs::create_dir_all(repo.join(".cargo")).unwrap();
+        std::fs::write(repo.join(".cargo/config.toml"), "[env]\n").unwrap();
+        let worktree_root = unique_temp_path("create-agent-worktree-root");
+
+        let mut app = app_for_worktree_tests();
+        app.state.worktree_directory = worktree_root.clone();
+        app.state.agent_worktree_command = vec!["sh".into()];
+        app.state.agent_worktree_symlink_paths = vec![".cargo/config.toml".into()];
+
+        // Source workspace bound to the repo's primary (non-linked) checkout.
+        // `cached_git_space` mirrors what a real GitWorkspace carries (and is
+        // what `worktree_source_metadata` reads to reject linked sources).
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("source")];
+        app.state.workspaces[0].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "repo-key".into(),
+            checkout_key: repo.display().to_string(),
+            label: "herdr".into(),
+            repo_root: repo.clone(),
+            is_linked_worktree: false,
+        });
+        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: repo.clone(),
+            checkout_path: repo.clone(),
+            is_linked_worktree: false,
+        });
+
+        app.create_agent_in_worktree(0);
+        assert!(
+            app.state.config_diagnostic.is_none(),
+            "unexpected diagnostic: {:?}",
+            app.state.config_diagnostic
+        );
+
+        // A new worktree-backed agent workspace was added and tagged.
+        assert_eq!(app.state.workspaces.len(), 2);
+        let membership = app.state.workspaces[1]
+            .worktree_space()
+            .cloned()
+            .expect("agent workspace is tagged as a linked worktree");
+        assert!(membership.is_linked_worktree);
+        let checkout = membership.checkout_path.clone();
+        assert!(checkout.join(".git").exists(), "worktree checkout exists");
+
+        // The gitignored file was symlinked from the source checkout.
+        let linked = checkout.join(".cargo/config.toml");
+        assert!(linked.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&linked).unwrap(), "[env]\n");
+
+        // The new branch is named after the agent.
+        let branch = crate::worktree::list_existing_worktrees(&repo)
+            .unwrap()
+            .into_iter()
+            .find(|wt| {
+                crate::worktree::canonical_or_original(&wt.path)
+                    == crate::worktree::canonical_or_original(&checkout)
+            })
+            .and_then(|wt| wt.branch);
+        assert_eq!(branch.as_deref(), Some("herdr-1"));
+
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, true);
+        let _ = crate::worktree::run_worktree_command(&remove);
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&worktree_root);
     }
 
     fn shutdown_test_runtimes(app: &mut App) {

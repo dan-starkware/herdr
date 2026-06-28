@@ -40,6 +40,32 @@ pub(crate) const fn capabilities() -> PlatformCapabilities {
     }
 }
 
+/// Create a filesystem symlink at `link` that points to `original`.
+///
+/// Lives here because the underlying call is OS-specific: Unix has a single
+/// `symlink`, while Windows distinguishes file and directory links.
+#[cfg(unix)]
+pub(crate) fn symlink(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(original, link)
+}
+
+#[cfg(windows)]
+pub(crate) fn symlink(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    if original.is_dir() {
+        std::os::windows::fs::symlink_dir(original, link)
+    } else {
+        std::os::windows::fs::symlink_file(original, link)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn symlink(_original: &std::path::Path, _link: &std::path::Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "symlinks are unsupported on this platform",
+    ))
+}
+
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardCommand {

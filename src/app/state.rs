@@ -1112,7 +1112,13 @@ impl ContextMenuState {
                 is_linked_worktree: false,
                 has_worktree_children: false,
                 ..
-            } => &["Rename", "Close", "New worktree", "Open worktree..."],
+            } => &[
+                "Rename",
+                "Close",
+                "New agent",
+                "New worktree",
+                "Open worktree...",
+            ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: true,
                 ..
@@ -1125,6 +1131,7 @@ impl ContextMenuState {
             } => &[
                 "Rename",
                 "Close group",
+                "New agent",
                 "New worktree",
                 "Open worktree...",
                 "Expand",
@@ -1137,6 +1144,7 @@ impl ContextMenuState {
             } => &[
                 "Rename",
                 "Close group",
+                "New agent",
                 "New worktree",
                 "Open worktree...",
                 "Collapse",
@@ -1303,6 +1311,9 @@ pub struct AppState {
     pub request_open_existing_worktree: Option<usize>,
     pub request_new_workspace_cwd: Option<std::path::PathBuf>,
     pub request_remove_linked_worktree: Option<usize>,
+    /// Set when a UI action asked to create a new agent in its own worktree,
+    /// rooted at the repository backing this workspace index.
+    pub request_new_agent_worktree: Option<usize>,
     pub request_submit_worktree_create: bool,
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
@@ -1320,6 +1331,12 @@ pub struct AppState {
     pub worktree_open: Option<WorktreeOpenState>,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
+    /// Command launched when creating an agent in its own worktree. From
+    /// `[worktrees] agent_command`; defaults to `["claude"]`.
+    pub agent_worktree_command: Vec<String>,
+    /// Gitignored paths symlinked from the source checkout into each new agent
+    /// worktree. From `[worktrees] agent_symlink_paths`.
+    pub agent_worktree_symlink_paths: Vec<String>,
     pub collapsed_space_keys: std::collections::HashSet<String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
@@ -1657,6 +1674,7 @@ impl AppState {
             request_open_existing_worktree: None,
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
+            request_new_agent_worktree: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -1670,6 +1688,8 @@ impl AppState {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
+            agent_worktree_command: vec!["claude".into()],
+            agent_worktree_symlink_paths: Vec::new(),
             collapsed_space_keys: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
@@ -2251,7 +2271,13 @@ mod tests {
 
         assert_eq!(
             menu.items(),
-            &["Rename", "Close", "New worktree", "Open worktree..."]
+            &[
+                "Rename",
+                "Close",
+                "New agent",
+                "New worktree",
+                "Open worktree..."
+            ]
         );
     }
 
@@ -2274,6 +2300,7 @@ mod tests {
             &[
                 "Rename",
                 "Close group",
+                "New agent",
                 "New worktree",
                 "Open worktree...",
                 "Collapse"

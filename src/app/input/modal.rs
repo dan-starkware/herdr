@@ -675,6 +675,10 @@ pub(super) fn apply_context_menu_action(
 ) {
     let item = menu.items().get(idx).copied();
     match (menu.kind, item) {
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New agent")) => {
+            state.request_new_agent_worktree = Some(ws_idx);
+            leave_modal(state);
+        }
         (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);

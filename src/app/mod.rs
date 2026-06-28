@@ -462,6 +462,8 @@ impl App {
 
         let worktree_directory =
             crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
+        let agent_worktree_command = config.worktrees.agent_command.clone();
+        let agent_worktree_symlink_paths = config.worktrees.agent_symlink_paths.clone();
 
         info!(
             pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes,
@@ -511,6 +513,7 @@ impl App {
             request_open_existing_worktree: None,
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
+            request_new_agent_worktree: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -524,6 +527,8 @@ impl App {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory,
+            agent_worktree_command,
+            agent_worktree_symlink_paths,
             collapsed_space_keys,
             request_complete_onboarding: false,
             name_input: String::new(),
@@ -915,6 +920,11 @@ impl App {
 
             if let Some(ws_idx) = self.state.request_remove_linked_worktree.take() {
                 self.open_remove_linked_worktree_confirmation(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(ws_idx) = self.state.request_new_agent_worktree.take() {
+                self.create_agent_in_worktree(ws_idx);
                 needs_render = true;
             }
 
@@ -1414,6 +1424,8 @@ impl App {
         if !invalid_section("worktrees") {
             self.state.worktree_directory =
                 crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
+            self.state.agent_worktree_command = config.worktrees.agent_command.clone();
+            self.state.agent_worktree_symlink_paths = config.worktrees.agent_symlink_paths.clone();
         }
 
         if !invalid_section("theme") {

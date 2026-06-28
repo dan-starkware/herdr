@@ -449,6 +449,139 @@ impl App {
             })
             .collect()
     }
+
+    /// Pick a default agent name `<repo>-<n>`, scanning `n` upward from one for
+    /// the first that is free — no existing checkout directory and no live agent
+    /// of that name.
+    fn default_agent_worktree_name(&self, repo_label: &str) -> String {
+        let mut index = 1usize;
+        loop {
+            let candidate = format!("{repo_label}-{index}");
+            let path = crate::worktree::default_checkout_path(
+                &self.state.worktree_directory,
+                repo_label,
+                &candidate,
+            );
+            let name_taken = !self.agent_name_conflicts(&candidate, "").is_empty();
+            if !path.exists() && !name_taken {
+                return candidate;
+            }
+            index += 1;
+        }
+    }
+
+    /// Create a fresh git worktree for the repository backing workspace `ws_idx`
+    /// and launch an agent in it as its own workspace. The worktree is a clean
+    /// checkout on a new branch off `HEAD`, isolating the agent's edits; the
+    /// configured gitignored paths are symlinked in so the agent inherits local
+    /// setup git does not track. Diagnostics surface through `config_diagnostic`.
+    pub(crate) fn create_agent_in_worktree(&mut self, ws_idx: usize) {
+        let (space, source_checkout_path) = match self.worktree_source_metadata(ws_idx) {
+            Ok((_, space, source, _)) => (space, source),
+            Err(err) => {
+                self.state.config_diagnostic = Some(err);
+                return;
+            }
+        };
+
+        let name = self.default_agent_worktree_name(&space.label);
+        let checkout_path = crate::worktree::default_checkout_path(
+            &self.state.worktree_directory,
+            &space.label,
+            &name,
+        );
+
+        if let Some(parent) = checkout_path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                self.state.config_diagnostic = Some(format!(
+                    "create agent: could not create worktree dir: {err}"
+                ));
+                return;
+            }
+        }
+
+        // New branch named after the agent, off the source checkout's HEAD.
+        let command = crate::worktree::build_worktree_add_new_branch_command(
+            &space.repo_root,
+            &checkout_path,
+            &name,
+            "HEAD",
+        );
+        if let Err(err) = crate::worktree::run_worktree_command(&command) {
+            tracing::warn!(error = %err, "create-agent worktree add failed");
+            self.state.config_diagnostic = Some(format!("create agent failed: {err}"));
+            return;
+        }
+
+        // Inherit local gitignored setup (build config, env files, ...).
+        let failures = crate::worktree::symlink_agent_paths(
+            &source_checkout_path,
+            &checkout_path,
+            &self.state.agent_worktree_symlink_paths,
+        );
+        for (path, err) in &failures {
+            tracing::warn!(path, error = %err, "agent worktree symlink failed");
+        }
+
+        self.finish_create_agent_in_worktree(&space, &checkout_path, name);
+    }
+
+    /// Spawn the agent in the freshly created worktree as its own workspace and
+    /// tag it with worktree membership so kill-time cleanup can find it.
+    fn finish_create_agent_in_worktree(
+        &mut self,
+        space: &crate::workspace::GitSpaceMetadata,
+        checkout_path: &std::path::Path,
+        name: String,
+    ) {
+        let argv = self.state.agent_worktree_command.clone();
+        if argv.is_empty() {
+            self.state.config_diagnostic =
+                Some("create agent: worktrees.agent_command is empty".into());
+            return;
+        }
+        let (rows, cols) = self.state.estimate_pane_size();
+        match self.spawn_agent_workspace(
+            checkout_path.to_path_buf(),
+            rows,
+            cols,
+            &argv,
+            Vec::new(),
+            true,
+        ) {
+            Ok((spawned_idx, _tab, pane_id)) => {
+                if let Some(ws) = self.state.workspaces.get_mut(spawned_idx) {
+                    ws.set_custom_name(name.clone());
+                    ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+                        key: space.key.clone(),
+                        label: space.label.clone(),
+                        repo_root: space.repo_root.clone(),
+                        checkout_path: checkout_path.to_path_buf(),
+                        is_linked_worktree: true,
+                    });
+                }
+                if let Some(terminal_id) = self
+                    .state
+                    .workspaces
+                    .get(spawned_idx)
+                    .and_then(|ws| ws.terminal_id(pane_id))
+                    .cloned()
+                {
+                    if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                        terminal.set_agent_name(name.clone());
+                        terminal.set_manual_label(name);
+                    }
+                }
+                self.state.mark_session_dirty();
+            }
+            Err(err) => {
+                let body = self.agent_start_error_body(err);
+                tracing::warn!(error = %body.message, "create-agent spawn failed");
+                self.state.config_diagnostic =
+                    Some(format!("create agent failed: {}", body.message));
+            }
+        }
+    }
 }
 
 pub(super) enum AgentStartError {

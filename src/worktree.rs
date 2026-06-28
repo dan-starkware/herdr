@@ -155,6 +155,62 @@ pub(crate) fn default_checkout_path(root: &Path, repo_name: &str, branch: &str) 
     root.join(repo_name).join(branch_to_path_slug(branch))
 }
 
+/// True for a relative path that stays inside the checkout — no absolute root
+/// and no `..` component that could escape it. Plain-component paths only.
+fn is_safe_relative_path(rel: &Path) -> bool {
+    use std::path::Component;
+    rel.components()
+        .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+        && rel.components().any(|c| matches!(c, Component::Normal(_)))
+}
+
+/// Best-effort symlink each of `paths` from `source_checkout` into
+/// `new_worktree`, so a freshly created worktree inherits local gitignored
+/// setup an agent needs (e.g. `.cargo/config.toml`, `.env`). Each entry is a
+/// path relative to the checkout root.
+///
+/// Skips entries that are unsafe (absolute or containing `..`), missing in the
+/// source, or already present in the worktree (so tracked files are never
+/// shadowed). Parent directories in the destination are created as needed.
+/// Returns `(path, error)` for entries that were requested but could not be
+/// linked, for the caller to surface; a fully successful run returns empty.
+pub(crate) fn symlink_agent_paths(
+    source_checkout: &Path,
+    new_worktree: &Path,
+    paths: &[String],
+) -> Vec<(String, String)> {
+    let mut failures = Vec::new();
+    for entry in paths {
+        let rel = Path::new(entry);
+        if !is_safe_relative_path(rel) {
+            failures.push((entry.clone(), "not a safe relative path".to_string()));
+            continue;
+        }
+        let source = source_checkout.join(rel);
+        if !source.exists() {
+            // Nothing to link from; silently skip — the source simply has no
+            // such local file.
+            continue;
+        }
+        let dest = new_worktree.join(rel);
+        if dest.exists() {
+            // A tracked file already provides this path in the worktree; never
+            // shadow it with a symlink.
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                failures.push((entry.clone(), err.to_string()));
+                continue;
+            }
+        }
+        if let Err(err) = crate::platform::symlink(&source, &dest) {
+            failures.push((entry.clone(), err.to_string()));
+        }
+    }
+    failures
+}
+
 pub(crate) fn build_worktree_remove_command(
     repo_root: &Path,
     path: &Path,
@@ -709,6 +765,63 @@ prunable stale
             ),
             PathBuf::from("/home/me/.herdr/worktrees/herdr/worktree-brave-river")
         );
+    }
+
+    #[test]
+    fn is_safe_relative_path_rejects_escapes_and_absolutes() {
+        assert!(is_safe_relative_path(Path::new(".cargo/config.toml")));
+        assert!(is_safe_relative_path(Path::new(".env")));
+        assert!(!is_safe_relative_path(Path::new("../secret")));
+        assert!(!is_safe_relative_path(Path::new("a/../../b")));
+        assert!(!is_safe_relative_path(Path::new("/etc/passwd")));
+        assert!(!is_safe_relative_path(Path::new("")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_agent_paths_links_present_skips_missing_and_existing() {
+        let source = unique_temp_path("symlink-source");
+        let worktree = unique_temp_path("symlink-worktree");
+        std::fs::create_dir_all(source.join(".cargo")).unwrap();
+        std::fs::write(source.join(".cargo/config.toml"), "[env]\n").unwrap();
+        std::fs::write(source.join(".env"), "TOKEN=1\n").unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        // A tracked file already present in the worktree must not be shadowed.
+        std::fs::write(worktree.join(".env"), "tracked\n").unwrap();
+
+        let failures = symlink_agent_paths(
+            &source,
+            &worktree,
+            &[
+                ".cargo/config.toml".to_string(),
+                ".env".to_string(),
+                "missing.toml".to_string(),
+                "../escape".to_string(),
+            ],
+        );
+
+        // Nested path is linked, parent dir created, and it resolves to source.
+        let linked = worktree.join(".cargo/config.toml");
+        assert!(linked.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&linked).unwrap(), "[env]\n");
+        // Existing tracked file is left untouched (not a symlink).
+        assert!(!worktree
+            .join(".env")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(worktree.join(".env")).unwrap(),
+            "tracked\n"
+        );
+        // Missing source is skipped silently; unsafe path is reported.
+        assert!(!worktree.join("missing.toml").exists());
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, "../escape");
+
+        let _ = std::fs::remove_dir_all(&source);
+        let _ = std::fs::remove_dir_all(&worktree);
     }
 
     #[test]
