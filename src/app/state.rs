@@ -1337,6 +1337,11 @@ pub struct AppState {
     /// Gitignored paths symlinked from the source checkout into each new agent
     /// worktree. From `[worktrees] agent_symlink_paths`.
     pub agent_worktree_symlink_paths: Vec<String>,
+    /// Stable ids of workspaces whose worktree this session created for an
+    /// agent. Closing one prompts to remove the worktree. Transient (not
+    /// persisted): after a restart these become ordinary linked-worktree
+    /// workspaces, still removable from the context menu.
+    pub agent_worktree_workspace_ids: std::collections::HashSet<String>,
     pub collapsed_space_keys: std::collections::HashSet<String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
@@ -1469,6 +1474,17 @@ pub struct AppState {
 impl AppState {
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
+    }
+
+    /// True when `ws_idx` is a worktree this session created for an agent — a
+    /// linked worktree whose id is in `agent_worktree_workspace_ids`. Closing
+    /// one of these should prompt to remove its worktree.
+    pub(crate) fn is_agent_worktree_workspace(&self, ws_idx: usize) -> bool {
+        self.workspaces.get(ws_idx).is_some_and(|ws| {
+            ws.worktree_space()
+                .is_some_and(|space| space.is_linked_worktree)
+                && self.agent_worktree_workspace_ids.contains(&ws.id)
+        })
     }
 
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
@@ -1690,6 +1706,7 @@ impl AppState {
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             agent_worktree_command: vec!["claude".into()],
             agent_worktree_symlink_paths: Vec::new(),
+            agent_worktree_workspace_ids: std::collections::HashSet::new(),
             collapsed_space_keys: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),

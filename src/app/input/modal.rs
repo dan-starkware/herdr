@@ -723,7 +723,12 @@ pub(super) fn apply_context_menu_action(
             Some("Close" | "Close group"),
         ) => {
             state.selected = ws_idx;
-            if state.confirm_close {
+            if state.is_agent_worktree_workspace(ws_idx) {
+                // Killing an agent prompts to remove its worktree (the main loop
+                // opens the remove confirmation).
+                state.request_remove_linked_worktree = Some(ws_idx);
+                leave_modal(state);
+            } else if state.confirm_close {
                 open_confirm_close(state);
             } else {
                 state.close_selected_workspace();

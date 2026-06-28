@@ -560,6 +560,16 @@ impl App {
                         is_linked_worktree: true,
                     });
                 }
+                if let Some(workspace_id) = self
+                    .state
+                    .workspaces
+                    .get(spawned_idx)
+                    .map(|ws| ws.id.clone())
+                {
+                    // Bind the worktree's lifecycle to this agent so closing it
+                    // prompts to remove the checkout.
+                    self.state.agent_worktree_workspace_ids.insert(workspace_id);
+                }
                 if let Some(terminal_id) = self
                     .state
                     .workspaces

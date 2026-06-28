@@ -529,6 +529,7 @@ impl App {
             worktree_directory,
             agent_worktree_command,
             agent_worktree_symlink_paths,
+            agent_worktree_workspace_ids: std::collections::HashSet::new(),
             collapsed_space_keys,
             request_complete_onboarding: false,
             name_input: String::new(),

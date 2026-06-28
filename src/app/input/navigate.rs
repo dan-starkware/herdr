@@ -794,7 +794,12 @@ pub(super) fn execute_navigate_action_in_context(
         NavigateAction::CloseWorkspace => {
             if let Some(ws_idx) = workspace_action_target(state, context) {
                 state.selected = ws_idx;
-                if state.confirm_close {
+                if state.is_agent_worktree_workspace(ws_idx) {
+                    // Killing an agent prompts to remove its worktree (the main
+                    // loop opens the remove confirmation).
+                    state.request_remove_linked_worktree = Some(ws_idx);
+                    leave_navigate_mode(state);
+                } else if state.confirm_close {
                     super::modal::open_confirm_close(state);
                 } else {
                     state.close_selected_workspace();
@@ -1999,6 +2004,31 @@ last_pane = "prefix+tab"
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].display_name(), "main");
         assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn closing_agent_worktree_prompts_to_remove_its_checkout() {
+        let mut state = state_with_workspaces(&["main", "agent"]);
+        state.selected = 1;
+        state.active = Some(1);
+        state.mode = Mode::Navigate;
+        state.confirm_close = false;
+        state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-agent".into(),
+            is_linked_worktree: true,
+        });
+        let agent_ws_id = state.workspaces[1].id.clone();
+        state.agent_worktree_workspace_ids.insert(agent_ws_id);
+
+        execute_navigate_action(&mut state, NavigateAction::CloseWorkspace);
+
+        // The workspace is not torn down yet; a worktree-removal confirmation is
+        // requested instead, so the agent's checkout is never silently orphaned.
+        assert_eq!(state.request_remove_linked_worktree, Some(1));
+        assert_eq!(state.workspaces.len(), 2);
     }
 
     #[test]
