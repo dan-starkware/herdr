@@ -679,6 +679,74 @@ impl App {
             }
         }
     }
+
+    /// Open a new tab in `ws_idx` reviewing the workspace branch's diff against
+    /// `base` (defaulting to the Graphite parent, or the repo's default branch
+    /// when untracked). Honors `HERDR_REVIEW_CMD` for an external reviewer (run
+    /// as `<cmd> <base>`, e.g. vimrev/delta); otherwise runs
+    /// `git diff <base>...HEAD`, which git pages inside the pane's PTY.
+    pub(crate) fn open_review_diff_tab(&mut self, ws_idx: usize, base_override: Option<String>) {
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return;
+        };
+        let cwd = ws
+            .worktree_space()
+            .map(|space| space.checkout_path.clone())
+            .unwrap_or_else(|| ws.identity_cwd.clone());
+        let base = base_override.unwrap_or_else(|| crate::worktree::review_diff_base(&cwd));
+
+        let argv = match std::env::var("HERDR_REVIEW_CMD") {
+            Ok(cmd) if !cmd.trim().is_empty() => {
+                let shell = crate::pane::pane_shell(&self.state.default_shell);
+                let command_line = format!("{cmd} {}", shell_single_quote(&base));
+                vec![shell, "-ic".to_string(), command_line]
+            }
+            _ => vec![
+                "git".to_string(),
+                "diff".to_string(),
+                format!("{base}...HEAD"),
+            ],
+        };
+
+        let scrollback = self.state.pane_scrollback_limit_bytes;
+        let theme = self.state.host_terminal_theme;
+        let (rows, cols) = self.state.estimate_pane_size();
+        let result = {
+            let Some(ws_mut) = self.state.workspaces.get_mut(ws_idx) else {
+                return;
+            };
+            ws_mut.create_tab_argv_command(rows, cols, cwd, &argv, Vec::new(), scrollback, theme)
+        };
+        match result {
+            Ok((idx, terminal, runtime)) => {
+                if let Some(tab) = self
+                    .state
+                    .workspaces
+                    .get_mut(ws_idx)
+                    .and_then(|ws| ws.tabs.get_mut(idx))
+                {
+                    tab.set_custom_name(format!("diff: {base}"));
+                }
+                let root_pane = self.state.workspaces[ws_idx].tabs[idx].root_pane;
+                self.terminal_runtimes.insert(terminal.id.clone(), runtime);
+                self.state.terminals.insert(terminal.id.clone(), terminal);
+                self.state.remove_alias_shadowed_by_new_pane(root_pane);
+                self.state.switch_workspace_tab(ws_idx, idx);
+                self.state.mode = Mode::Terminal;
+                self.emit_tab_created_events(ws_idx, idx);
+                self.schedule_session_save();
+            }
+            Err(err) => {
+                self.set_transient_diagnostic(format!("review diff failed: {err}"));
+            }
+        }
+    }
+}
+
+/// POSIX single-quote `value` so it survives as one argument in a shell command
+/// line (for the `HERDR_REVIEW_CMD` path).
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Which branch a worktree agent should be created on.

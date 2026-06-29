@@ -697,6 +697,10 @@ pub(super) fn apply_context_menu_action(
             state.request_open_existing_worktree = Some(ws_idx);
             leave_modal(state);
         }
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Diff vs parent")) => {
+            state.request_review_diff = Some((ws_idx, None));
+            leave_modal(state);
+        }
         (
             ContextMenuKind::GitWorkspace {
                 ws_idx, collapsed, ..

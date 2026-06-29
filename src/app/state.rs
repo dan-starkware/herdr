@@ -1181,11 +1181,17 @@ impl ContextMenuState {
                 "New agent",
                 "New worktree",
                 "Open worktree...",
+                "Diff vs parent",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: true,
                 ..
-            } => &["Rename", "Close", "Delete worktree checkout..."],
+            } => &[
+                "Rename",
+                "Close",
+                "Delete worktree checkout...",
+                "Diff vs parent",
+            ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
                 has_worktree_children: true,
@@ -1197,6 +1203,7 @@ impl ContextMenuState {
                 "New agent",
                 "New worktree",
                 "Open worktree...",
+                "Diff vs parent",
                 "Expand",
             ],
             ContextMenuKind::GitWorkspace {
@@ -1210,6 +1217,7 @@ impl ContextMenuState {
                 "New agent",
                 "New worktree",
                 "Open worktree...",
+                "Diff vs parent",
                 "Collapse",
             ],
             ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
@@ -1377,6 +1385,10 @@ pub struct AppState {
     /// Set when a UI action asked to create a new agent in its own worktree,
     /// rooted at the repository backing this workspace index.
     pub request_new_agent_worktree: Option<usize>,
+    /// Set when a UI action asked to open a review-diff tab for a workspace:
+    /// `(workspace index, optional base branch override)`. `None` base means
+    /// diff against the branch's Graphite parent / default branch.
+    pub request_review_diff: Option<(usize, Option<String>)>,
     pub request_submit_worktree_create: bool,
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
@@ -1760,6 +1772,7 @@ impl AppState {
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
             request_new_agent_worktree: None,
+            request_review_diff: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -2377,7 +2390,12 @@ mod tests {
 
         assert_eq!(
             menu.items(),
-            &["Rename", "Close", "Delete worktree checkout..."]
+            &[
+                "Rename",
+                "Close",
+                "Delete worktree checkout...",
+                "Diff vs parent"
+            ]
         );
     }
 
@@ -2402,7 +2420,8 @@ mod tests {
                 "Close",
                 "New agent",
                 "New worktree",
-                "Open worktree..."
+                "Open worktree...",
+                "Diff vs parent"
             ]
         );
     }
@@ -2429,6 +2448,7 @@ mod tests {
                 "New agent",
                 "New worktree",
                 "Open worktree...",
+                "Diff vs parent",
                 "Collapse"
             ]
         );

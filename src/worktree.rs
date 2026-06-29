@@ -727,6 +727,37 @@ fn parse_graphite_log_line(line: &str) -> Option<BranchRow> {
     })
 }
 
+/// The Graphite parent of the branch checked out in `worktree`, or `None` when
+/// the repo isn't gt-tracked or the branch itself is untracked. `gt parent`
+/// operates on the current branch, so we run it in the worktree (which is
+/// checked out on that branch). Gated on [`graphite_is_tracked`] so plain repos
+/// never invoke `gt`.
+pub(crate) fn graphite_parent_in_worktree(worktree: &Path) -> Option<String> {
+    if !graphite_is_tracked(worktree) {
+        return None;
+    }
+    let output = std::process::Command::new("gt")
+        .current_dir(worktree)
+        .arg("parent")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    // A clean result is a single branch name; reject help/error chatter.
+    if name.is_empty() || name.split_whitespace().count() != 1 {
+        return None;
+    }
+    Some(name)
+}
+
+/// The base branch to diff the worktree's branch against for review: its
+/// Graphite parent when tracked, otherwise the repo's default base branch.
+pub(crate) fn review_diff_base(worktree: &Path) -> String {
+    graphite_parent_in_worktree(worktree).unwrap_or_else(|| default_base_branch(worktree))
+}
+
 /// Best-effort `gt track --parent <base>` inside `checkout_path` so a freshly
 /// created branch stacks on top of its base. `gt` has no `-C`, so we set the
 /// working directory; `--quiet --no-interactive` keeps it from blocking on a
@@ -1278,6 +1309,19 @@ prunable stale
         assert!(rows
             .iter()
             .any(|row| row.name == "main" || row.name == "master"));
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn review_diff_base_falls_back_to_default_branch_for_plain_repo() {
+        let repo = create_committed_repo("review-diff-base-plain");
+        // No Graphite: base is the repo's default branch (main/master).
+        let base = review_diff_base(&repo);
+        assert!(
+            base == "main" || base == "master",
+            "unexpected base: {base}"
+        );
+        assert_eq!(graphite_parent_in_worktree(&repo), None);
         let _ = std::fs::remove_dir_all(repo);
     }
 

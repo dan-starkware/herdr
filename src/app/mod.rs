@@ -514,6 +514,7 @@ impl App {
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
             request_new_agent_worktree: None,
+            request_review_diff: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -911,6 +912,11 @@ impl App {
 
         if let Some(ws_idx) = self.state.request_new_agent_worktree.take() {
             self.create_agent_in_worktree(ws_idx);
+            handled = true;
+        }
+
+        if let Some((ws_idx, base)) = self.state.request_review_diff.take() {
+            self.open_review_diff_tab(ws_idx, base);
             handled = true;
         }
 
@@ -3246,6 +3252,16 @@ mod tests {
     fn process_deferred_requests_reports_no_work_when_idle() {
         let mut app = test_app();
         assert!(!app.process_deferred_requests());
+    }
+
+    #[test]
+    fn process_deferred_requests_consumes_review_diff() {
+        // Out-of-range workspace index makes the handler a safe no-op (no PTY
+        // spawn); we only assert the shared loop consumes the flag.
+        let mut app = test_app();
+        app.state.request_review_diff = Some((999, None));
+        assert!(app.process_deferred_requests());
+        assert!(app.state.request_review_diff.is_none());
     }
 
     #[test]
