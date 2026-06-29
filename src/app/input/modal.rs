@@ -1468,6 +1468,49 @@ mod tests {
     }
 
     #[test]
+    fn context_menu_diff_actions_set_review_requests() {
+        let mut state = state_with_workspaces(&["main"]);
+        state.active = Some(0);
+        let git_workspace = || ContextMenuKind::GitWorkspace {
+            ws_idx: 0,
+            is_linked_worktree: true,
+            has_worktree_children: false,
+            collapsed: false,
+        };
+        let mut rt = crate::terminal::TerminalRuntimeRegistry::new();
+
+        // "Diff vs parent" -> diff against the resolved base (None override).
+        let menu = ContextMenuState {
+            kind: git_workspace(),
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        let parent_idx = menu
+            .items()
+            .iter()
+            .position(|item| *item == "Diff vs parent")
+            .expect("menu has Diff vs parent");
+        apply_context_menu_action(&mut state, &mut rt, menu, parent_idx);
+        assert_eq!(state.request_review_diff, Some((0, None)));
+
+        // "Diff vs branch..." -> open the base picker for this workspace.
+        let menu = ContextMenuState {
+            kind: git_workspace(),
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        let branch_idx = menu
+            .items()
+            .iter()
+            .position(|item| *item == "Diff vs branch...")
+            .expect("menu has Diff vs branch...");
+        apply_context_menu_action(&mut state, &mut rt, menu, branch_idx);
+        assert_eq!(state.request_review_diff_pick, Some(0));
+    }
+
+    #[test]
     fn context_menu_close_pane_last_parent_group_pane_keeps_confirmation_mode() {
         let mut state = state_with_workspaces(&["main", "issue"]);
         state.active = Some(0);

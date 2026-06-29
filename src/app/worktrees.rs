@@ -1079,6 +1079,70 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn open_review_diff_tab_spawns_a_diff_tab_for_a_nonempty_branch() {
+        let repo = create_committed_repo("review-diff-tab-repo");
+        // A feature branch with a commit ahead of the default branch, so the
+        // `<base>...HEAD` diff is non-empty.
+        run_git(&repo, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.join("feature.txt"), "change\n").unwrap();
+        run_git(&repo, &["add", "feature.txt"]);
+        run_git(&repo, &["commit", "--quiet", "-m", "feature work"]);
+
+        let mut app = app_for_worktree_tests();
+        let mut ws = crate::workspace::Workspace::test_new("feature");
+        ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: repo.clone(),
+            checkout_path: repo.clone(),
+            is_linked_worktree: true,
+        });
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        let tabs_before = app.state.workspaces[0].tabs.len();
+
+        app.open_review_diff_tab(0, None);
+
+        // A new tab opens with a spawned terminal running the diff.
+        assert_eq!(
+            app.state.workspaces[0].tabs.len(),
+            tabs_before + 1,
+            "diff vs parent should open a new tab; config_diagnostic={:?}",
+            app.state.config_diagnostic
+        );
+        let new_tab = app.state.workspaces[0].tabs.last().unwrap();
+        let pane = new_tab.root_pane;
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane)
+            .expect("diff tab pane has a terminal")
+            .clone();
+        let terminal = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("diff tab terminal is registered");
+        let argv = terminal
+            .launch_argv
+            .clone()
+            .expect("diff tab records its launch argv");
+        // Runs through a shell so the diff is paged and the tab stays open.
+        assert_eq!(argv[1], "-ic", "unexpected diff argv: {argv:?}");
+        let command_line = &argv[2];
+        assert!(command_line.contains("git"), "argv: {argv:?}");
+        assert!(command_line.contains("diff"), "argv: {argv:?}");
+        assert!(command_line.contains("...HEAD"), "argv: {argv:?}");
+        assert!(
+            command_line.contains("less"),
+            "diff should be paged so the tab stays open: {argv:?}"
+        );
+
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &repo, true);
+        let _ = crate::worktree::run_worktree_command(&remove);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn create_agent_for_existing_branch_checks_it_out_in_worktree() {
         let repo = create_committed_repo("create-agent-existing-branch-repo");
         run_git(&repo, &["branch", "feature/login"]);

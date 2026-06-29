@@ -702,18 +702,22 @@ impl App {
             .unwrap_or_else(|| ws.identity_cwd.clone());
         let base = base_override.unwrap_or_else(|| crate::worktree::review_diff_base(&cwd));
 
-        let argv = match std::env::var("HERDR_REVIEW_CMD") {
+        let shell = crate::pane::pane_shell(&self.state.default_shell);
+        let command_line = match std::env::var("HERDR_REVIEW_CMD") {
             Ok(cmd) if !cmd.trim().is_empty() => {
-                let shell = crate::pane::pane_shell(&self.state.default_shell);
-                let command_line = format!("{cmd} {}", shell_single_quote(&base));
-                vec![shell, "-ic".to_string(), command_line]
+                format!("{cmd} {}", shell_single_quote(&base))
             }
-            _ => vec![
-                "git".to_string(),
-                "diff".to_string(),
-                format!("{base}...HEAD"),
-            ],
+            // Force color (git only colorizes a TTY) and page with `less -R`
+            // *without* `-F`, so the diff tab stays open and scrollable. A bare
+            // `git diff` uses git's `less -FRX`, which quits immediately when the
+            // diff fits one screen — the pane then exits and looks like nothing
+            // happened.
+            _ => format!(
+                "git -c color.ui=always diff {}...HEAD | less -R",
+                shell_single_quote(&base)
+            ),
         };
+        let argv = vec![shell, "-ic".to_string(), command_line];
 
         let scrollback = self.state.pane_scrollback_limit_bytes;
         let theme = self.state.host_terminal_theme;
