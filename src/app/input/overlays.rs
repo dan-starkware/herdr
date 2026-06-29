@@ -450,7 +450,8 @@ impl App {
         match self.state.repo_chooser.intent {
             RepoChooserIntent::OpenWorkspace => self.open_or_switch_workspace_for_repo(repo),
             RepoChooserIntent::NewAgent => {
-                self.state.open_branch_chooser(&repo);
+                self.state
+                    .open_branch_chooser(&repo, crate::app::state::BranchChooserIntent::NewAgent);
                 self.state.new_agent_flow = Some(NewAgentFlow {
                     repo: Some(repo),
                     branch: None,
@@ -503,12 +504,26 @@ impl App {
         else {
             return;
         };
-        // Carry the branch into the flow and advance to the agent step.
-        if let Some(flow) = self.state.new_agent_flow.as_mut() {
-            flow.branch = Some(choice);
-            self.state.open_agent_chooser();
-        } else {
-            leave_modal(&mut self.state);
+        match self.state.branch_chooser.intent {
+            crate::app::state::BranchChooserIntent::NewAgent => {
+                // Carry the branch into the flow and advance to the agent step.
+                if let Some(flow) = self.state.new_agent_flow.as_mut() {
+                    flow.branch = Some(choice);
+                    self.state.open_agent_chooser();
+                } else {
+                    leave_modal(&mut self.state);
+                }
+            }
+            crate::app::state::BranchChooserIntent::ReviewDiff { ws_idx } => {
+                // The chosen branch is the diff base; open the review tab.
+                let base = match choice {
+                    crate::ui::branch_chooser::BranchChoice::Existing(name) => name,
+                    crate::ui::branch_chooser::BranchChoice::StackOnto { base } => base,
+                    crate::ui::branch_chooser::BranchChoice::New { name, .. } => name,
+                };
+                leave_modal(&mut self.state);
+                self.open_review_diff_tab(ws_idx, Some(base));
+            }
         }
     }
 
@@ -523,7 +538,10 @@ impl App {
                         .as_ref()
                         .and_then(|flow| flow.repo.clone())
                     {
-                        self.state.open_branch_chooser(&repo);
+                        self.state.open_branch_chooser(
+                            &repo,
+                            crate::app::state::BranchChooserIntent::NewAgent,
+                        );
                     } else {
                         leave_modal(&mut self.state);
                     }
@@ -853,8 +871,14 @@ impl AppState {
         (idx < self.agent_chooser_filtered_indices().len()).then_some(idx)
     }
 
-    /// Populate and open the branch chooser for `repo` (the new agent's repo).
-    pub(crate) fn open_branch_chooser(&mut self, repo: &crate::workspace::Repository) {
+    /// Populate and open the branch chooser for `repo`, with `intent` deciding
+    /// what accepting a branch does (advance the new-agent flow, or open a
+    /// review diff against the chosen base).
+    pub(crate) fn open_branch_chooser(
+        &mut self,
+        repo: &crate::workspace::Repository,
+        intent: crate::app::state::BranchChooserIntent,
+    ) {
         let branches = crate::worktree::list_chooser_branches(&repo.root);
         let default_base = crate::worktree::default_base_branch(&repo.root);
         let graphite = crate::worktree::graphite_is_tracked(&repo.root);
@@ -865,6 +889,7 @@ impl AppState {
             query: String::new(),
             selected: 0,
             scroll: 0,
+            intent,
         };
         self.mode = Mode::BranchChooser;
     }

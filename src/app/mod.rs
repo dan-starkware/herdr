@@ -515,6 +515,7 @@ impl App {
             request_remove_linked_worktree: None,
             request_new_agent_worktree: None,
             request_review_diff: None,
+            request_review_diff_pick: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -918,6 +919,11 @@ impl App {
 
         if let Some((ws_idx, base)) = self.state.request_review_diff.take() {
             self.open_review_diff_tab(ws_idx, base);
+            handled = true;
+        }
+
+        if let Some(ws_idx) = self.state.request_review_diff_pick.take() {
+            self.open_review_diff_branch_picker(ws_idx);
             handled = true;
         }
 
@@ -3264,6 +3270,16 @@ mod tests {
         app.state.request_review_diff = Some((999, None));
         assert!(app.process_deferred_requests());
         assert!(app.state.request_review_diff.is_none());
+    }
+
+    #[test]
+    fn process_deferred_requests_consumes_review_diff_pick() {
+        // Out-of-range index: the picker handler returns early, but the shared
+        // loop must still consume the flag.
+        let mut app = test_app();
+        app.state.request_review_diff_pick = Some(999);
+        assert!(app.process_deferred_requests());
+        assert!(app.state.request_review_diff_pick.is_none());
     }
 
     #[test]

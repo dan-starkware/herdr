@@ -748,6 +748,35 @@ impl App {
             }
         }
     }
+
+    /// Open the branch chooser for `ws_idx`'s repo to pick an explicit base for
+    /// a review diff. Accepting routes to [`Self::open_review_diff_tab`] with the
+    /// chosen branch (see `accept_branch_chooser`).
+    pub(crate) fn open_review_diff_branch_picker(&mut self, ws_idx: usize) {
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return;
+        };
+        let repo = if let Some(space) = ws.worktree_space() {
+            crate::workspace::Repository {
+                key: space.key.clone(),
+                root: space.repo_root.clone(),
+                label: space.label.clone(),
+            }
+        } else if let Some(space) = ws.cached_git_space.as_ref() {
+            crate::workspace::Repository {
+                key: space.key.clone(),
+                root: space.repo_root.clone(),
+                label: space.label.clone(),
+            }
+        } else {
+            self.set_transient_diagnostic("diff: workspace is not a git repo".into());
+            return;
+        };
+        self.state.open_branch_chooser(
+            &repo,
+            crate::app::state::BranchChooserIntent::ReviewDiff { ws_idx },
+        );
+    }
 }
 
 /// POSIX single-quote `value` so it survives as one argument in a shell command

@@ -227,6 +227,7 @@ mod tests {
             query: query.into(),
             selected: 0,
             scroll: 0,
+            intent: crate::app::state::BranchChooserIntent::NewAgent,
         }
     }
 

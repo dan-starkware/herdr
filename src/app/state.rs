@@ -867,6 +867,16 @@ pub(crate) struct NewAgentFlow {
     pub branch: Option<crate::ui::branch_chooser::BranchChoice>,
 }
 
+/// What accepting a branch in the branch chooser does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum BranchChooserIntent {
+    /// Carry the branch into the new-agent flow and advance to the agent step.
+    #[default]
+    NewAgent,
+    /// Open a review-diff tab for `ws_idx` against the chosen branch as base.
+    ReviewDiff { ws_idx: usize },
+}
+
 /// State for the branch chooser overlay: a fuzzy-filtered list of the chosen
 /// repo's branches. In a plain git repo, picking a match checks it out in a new
 /// worktree and typing a new name creates that branch off `default_base`. In a
@@ -888,6 +898,8 @@ pub(crate) struct BranchChooserState {
     pub selected: usize,
     /// Scroll offset (first visible filtered row).
     pub scroll: usize,
+    /// What accepting a branch does (new-agent flow vs review diff).
+    pub intent: BranchChooserIntent,
 }
 
 /// State for the agent chooser overlay: the final step of the new-agent flow.
@@ -1191,6 +1203,7 @@ impl ContextMenuState {
                 "New worktree",
                 "Open worktree...",
                 "Diff vs parent",
+                "Diff vs branch...",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: true,
@@ -1200,6 +1213,7 @@ impl ContextMenuState {
                 "Close",
                 "Delete worktree checkout...",
                 "Diff vs parent",
+                "Diff vs branch...",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
@@ -1213,6 +1227,7 @@ impl ContextMenuState {
                 "New worktree",
                 "Open worktree...",
                 "Diff vs parent",
+                "Diff vs branch...",
                 "Expand",
             ],
             ContextMenuKind::GitWorkspace {
@@ -1227,6 +1242,7 @@ impl ContextMenuState {
                 "New worktree",
                 "Open worktree...",
                 "Diff vs parent",
+                "Diff vs branch...",
                 "Collapse",
             ],
             ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
@@ -1398,6 +1414,10 @@ pub struct AppState {
     /// `(workspace index, optional base branch override)`. `None` base means
     /// diff against the branch's Graphite parent / default branch.
     pub request_review_diff: Option<(usize, Option<String>)>,
+    /// Set when a UI action asked to pick an explicit base branch for a review
+    /// diff: opens the branch chooser (with `ReviewDiff` intent) for this
+    /// workspace's repo.
+    pub request_review_diff_pick: Option<usize>,
     pub request_submit_worktree_create: bool,
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
@@ -1782,6 +1802,7 @@ impl AppState {
             request_remove_linked_worktree: None,
             request_new_agent_worktree: None,
             request_review_diff: None,
+            request_review_diff_pick: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -2404,7 +2425,8 @@ mod tests {
                 "Rename",
                 "Close",
                 "Delete worktree checkout...",
-                "Diff vs parent"
+                "Diff vs parent",
+                "Diff vs branch..."
             ]
         );
     }
@@ -2431,7 +2453,8 @@ mod tests {
                 "New agent",
                 "New worktree",
                 "Open worktree...",
-                "Diff vs parent"
+                "Diff vs parent",
+                "Diff vs branch..."
             ]
         );
     }
@@ -2459,6 +2482,7 @@ mod tests {
                 "New worktree",
                 "Open worktree...",
                 "Diff vs parent",
+                "Diff vs branch...",
                 "Collapse"
             ]
         );

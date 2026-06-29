@@ -701,6 +701,10 @@ pub(super) fn apply_context_menu_action(
             state.request_review_diff = Some((ws_idx, None));
             leave_modal(state);
         }
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Diff vs branch...")) => {
+            state.request_review_diff_pick = Some(ws_idx);
+            leave_modal(state);
+        }
         (
             ContextMenuKind::GitWorkspace {
                 ws_idx, collapsed, ..
