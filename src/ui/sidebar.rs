@@ -241,17 +241,31 @@ fn workspace_row_height(ws: &crate::workspace::Workspace) -> u16 {
 /// Spans for a worktree child's diff-stats sub-line: committed (`base...HEAD`)
 /// then uncommitted working changes, e.g. `+412 -98  ·  ~18 -3` or `… · clean`.
 /// Renders a muted placeholder until the first git refresh populates the stats.
+/// `is_last` controls the tree rail: the vertical connector continues (`│`)
+/// under non-last children and is blank under the last child in a group.
 fn worktree_stats_spans(
     stats: Option<crate::workspace::WorktreeDiffStats>,
+    is_last: bool,
     p: &Palette,
 ) -> Vec<Span<'static>> {
     let dim = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
-    let indent = Span::styled("       ", Style::default());
-    let Some(stats) = stats else {
-        return vec![indent, Span::styled("—", dim)];
+    // Align under the branch line's connector glyph (col 1), keeping the total
+    // leading width at 7 columns so the stats line up with the label above.
+    let rail = if is_last { " " } else { "│" };
+    let indent = || {
+        vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(rail, Style::default().fg(p.overlay0)),
+            Span::styled("     ", Style::default()),
+        ]
     };
-    let mut spans = vec![
-        indent,
+    let Some(stats) = stats else {
+        let mut spans = indent();
+        spans.push(Span::styled("—", dim));
+        return spans;
+    };
+    let mut spans = indent();
+    spans.extend([
         Span::styled(
             format!("+{}", stats.committed.added),
             Style::default().fg(p.green),
@@ -262,7 +276,7 @@ fn worktree_stats_spans(
             Style::default().fg(p.red),
         ),
         Span::styled("  ·  ", dim),
-    ];
+    ]);
     if stats.wip.is_empty() {
         spans.push(Span::styled("clean", dim));
     } else {
@@ -933,6 +947,22 @@ fn render_workspace_list(
     let scrollbar_rect = workspace_list_scrollbar_rect(app, area);
     let cards = &app.view.workspace_card_areas;
 
+    // Worktree children that are the last in their repo group (groups are
+    // separated by repo headers in the entry list, so this must come from the
+    // entries, not from card adjacency). Drives the `└` vs `├` tree connector.
+    let entries = workspace_list_entries(app);
+    let last_children: std::collections::HashSet<usize> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, entry)| match entry {
+            WorkspaceListEntry::Workspace {
+                ws_idx,
+                indented: true,
+            } if !next_entry_is_indented_workspace(&entries, idx) => Some(*ws_idx),
+            _ => None,
+        })
+        .collect();
+
     for card in cards {
         let i = card.ws_idx;
         let ws = &app.workspaces[i];
@@ -973,8 +1003,11 @@ fn render_workspace_list(
         let label = ws.display_name_from(&app.terminals, terminal_runtimes);
         let mut line1 = Vec::new();
         let mut show_workspace_icon = true;
+        let is_last_child = card.indented && last_children.contains(&i);
         if card.indented {
-            line1.push(Span::styled("   ", Style::default()));
+            // Tree connector linking the worktree child to its repo header.
+            let connector = if is_last_child { " └ " } else { " ├ " };
+            line1.push(Span::styled(connector, Style::default().fg(p.overlay0)));
         } else if let Some((key, collapsed)) = workspace_parent_group_state(app, i) {
             let icon = if collapsed { "▸" } else { "▾" };
             let (state_icon, state_style) = if collapsed {
@@ -1017,7 +1050,11 @@ fn render_workspace_list(
             if card.indented {
                 // Worktree child: diff-stats sub-line (committed · wip).
                 frame.render_widget(
-                    Paragraph::new(Line::from(worktree_stats_spans(ws.git_diff_stats(), p))),
+                    Paragraph::new(Line::from(worktree_stats_spans(
+                        ws.git_diff_stats(),
+                        is_last_child,
+                        p,
+                    ))),
                     Rect::new(card.rect.x, row_y + 1, card.rect.width, 1),
                 );
             } else if let Some(branch) = ws.branch() {
@@ -1315,6 +1352,24 @@ mod tests {
     use super::*;
     use crate::{detect::Agent, workspace::Workspace};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn worktree_stats_rail_reflects_last_child() {
+        let app = crate::app::state::AppState::test_new();
+        let p = &app.palette;
+        // The tree rail sits at column 1; total leading width stays 7 columns.
+        for is_last in [false, true] {
+            let spans = worktree_stats_spans(None, is_last, p);
+            let lead: usize = spans[..3].iter().map(|s| s.content.chars().count()).sum();
+            assert_eq!(lead, 7);
+        }
+        // Non-last child continues the vertical connector; the last child blanks it.
+        assert_eq!(
+            worktree_stats_spans(None, false, p)[1].content.as_ref(),
+            "│"
+        );
+        assert_eq!(worktree_stats_spans(None, true, p)[1].content.as_ref(), " ");
+    }
 
     #[test]
     fn render_sidebar_toggle_draws_expanded_collapse_icon() {
