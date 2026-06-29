@@ -1157,6 +1157,133 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
+    /// Build an app with a single worktree-backed workspace rooted at `repo`.
+    #[cfg(unix)]
+    fn app_with_worktree_workspace(repo: &std::path::Path, branch: &str) -> App {
+        let mut app = app_for_worktree_tests();
+        let mut ws = crate::workspace::Workspace::test_new(branch);
+        ws.cached_git_branch = Some(branch.to_string());
+        ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: repo.to_path_buf(),
+            checkout_path: repo.to_path_buf(),
+            is_linked_worktree: true,
+        });
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app
+    }
+
+    #[cfg(unix)]
+    fn review_row_argv(app: &App) -> Vec<String> {
+        let ws = &app.state.workspaces[0];
+        let review = ws
+            .pane_with_role(crate::pane::PaneRole::Review)
+            .expect("a review row is open");
+        let terminal_id = ws.terminal_id(review).expect("review pane has a terminal");
+        app.state
+            .terminals
+            .get(terminal_id)
+            .expect("review terminal registered")
+            .launch_argv
+            .clone()
+            .expect("review row records its launch argv")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn toggle_review_row_opens_then_closes_a_row_above_the_agent() {
+        let repo = create_committed_repo("toggle-review-row-repo");
+        run_git(&repo, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.join("feature.txt"), "change\n").unwrap();
+        run_git(&repo, &["add", "feature.txt"]);
+        run_git(&repo, &["commit", "--quiet", "-m", "feature work"]);
+
+        let mut app = app_with_worktree_workspace(&repo, "feature");
+        let agent = app.state.workspaces[0].agent_pane();
+        let tabs_before = app.state.workspaces[0].tabs.len();
+
+        // Open: a Review row joins the agent's tab (not a new tab).
+        app.toggle_review_row(0);
+        assert_eq!(app.state.workspaces[0].tabs.len(), tabs_before);
+        assert_eq!(
+            app.state.workspaces[0]
+                .active_tab()
+                .unwrap()
+                .layout
+                .pane_count(),
+            2
+        );
+        assert!(app.state.workspaces[0]
+            .pane_with_role(crate::pane::PaneRole::Review)
+            .is_some());
+        assert_eq!(
+            app.state.workspaces[0].agent_pane(),
+            agent,
+            "agent stays the bottom root row"
+        );
+        let argv = review_row_argv(&app);
+        assert_eq!(argv[1], "-ic", "review runs through a shell: {argv:?}");
+        assert!(argv[2].contains("diff"), "argv: {argv:?}");
+        assert!(argv[2].contains("...HEAD"), "argv: {argv:?}");
+
+        // Toggle again: the row closes, leaving just the agent.
+        app.toggle_review_row(0);
+        assert!(app.state.workspaces[0]
+            .pane_with_role(crate::pane::PaneRole::Review)
+            .is_none());
+        assert_eq!(
+            app.state.workspaces[0]
+                .active_tab()
+                .unwrap()
+                .layout
+                .pane_count(),
+            1
+        );
+
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &repo, true);
+        let _ = crate::worktree::run_worktree_command(&remove);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn review_row_vs_origin_diffs_against_the_branch_remote() {
+        let repo = create_committed_repo("review-vs-origin-repo");
+        run_git(&repo, &["checkout", "-q", "-b", "feature"]);
+
+        let mut app = app_with_worktree_workspace(&repo, "feature");
+
+        app.review_row_vs_origin(0);
+
+        let id = app.state.workspaces[0].id.clone();
+        assert!(
+            app.state.review_vs_origin.contains(&id),
+            "vs-origin marks the workspace"
+        );
+        let argv = review_row_argv(&app);
+        assert!(
+            argv[2].contains("'origin/feature'...HEAD"),
+            "vs-origin diffs against the branch's own remote: {argv:?}"
+        );
+
+        // Toggle closed, then toggle open again: opening a fresh row clears
+        // vs-origin and falls back to the branch's normal base.
+        app.toggle_review_row(0); // close
+        app.toggle_review_row(0); // open fresh
+        assert!(!app.state.review_vs_origin.contains(&id));
+        let argv = review_row_argv(&app);
+        assert!(
+            !argv[2].contains("origin/feature"),
+            "a plain toggle drops vs-origin: {argv:?}"
+        );
+
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &repo, true);
+        let _ = crate::worktree::run_worktree_command(&remove);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn create_agent_for_existing_branch_checks_it_out_in_worktree() {

@@ -42,7 +42,7 @@ use self::agent_detection::{
 use self::terminal::{GhosttyPaneTerminal, PaneTerminal};
 pub(crate) use self::terminal::{TerminalDirtyPatch, TerminalDirtyPatchOutcome};
 pub use self::{
-    state::PaneState,
+    state::{PaneRole, PaneState},
     terminal::{InputState, ScrollMetrics, TerminalCursorState},
 };
 

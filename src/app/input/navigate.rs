@@ -11,7 +11,7 @@ use ratatui::layout::Direction;
 
 use crate::{
     app::{
-        state::{AppState, Mode},
+        state::{AppState, Mode, ReviewRowAction},
         App,
     },
     input::TerminalKey,
@@ -614,6 +614,9 @@ pub(crate) enum NavigateAction {
     NewAgent,
     Detach,
     OpenNavigator,
+    ToggleReview,
+    ReloadReview,
+    ReviewVsOrigin,
 }
 
 fn indexed_navigation_action(
@@ -721,6 +724,9 @@ fn action_for_key(
         (&kb.new_agent, NavigateAction::NewAgent),
         (&kb.detach, NavigateAction::Detach),
         (&kb.goto, NavigateAction::OpenNavigator),
+        (&kb.review_toggle, NavigateAction::ToggleReview),
+        (&kb.review_reload, NavigateAction::ReloadReview),
+        (&kb.review_vs_origin, NavigateAction::ReviewVsOrigin),
     ] {
         if action_matches(bindings, key, dispatch) {
             return Some(action);
@@ -958,6 +964,24 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::OpenNavigator => state.open_navigator_from(terminal_runtimes),
+        NavigateAction::ToggleReview => {
+            if let Some(ws_idx) = workspace_action_target(state, context) {
+                state.request_review_row = Some((ws_idx, ReviewRowAction::Toggle));
+            }
+            leave_navigate_mode(state);
+        }
+        NavigateAction::ReloadReview => {
+            if let Some(ws_idx) = workspace_action_target(state, context) {
+                state.request_review_row = Some((ws_idx, ReviewRowAction::Reload));
+            }
+            leave_navigate_mode(state);
+        }
+        NavigateAction::ReviewVsOrigin => {
+            if let Some(ws_idx) = workspace_action_target(state, context) {
+                state.request_review_row = Some((ws_idx, ReviewRowAction::VsOrigin));
+            }
+            leave_navigate_mode(state);
+        }
     }
 
     finish_action_context(state, context, previous_mode);

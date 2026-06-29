@@ -337,6 +337,9 @@ pub struct Keybinds {
     pub zoom: ActionKeybinds,
     pub resize_mode: ActionKeybinds,
     pub toggle_sidebar: ActionKeybinds,
+    pub review_toggle: ActionKeybinds,
+    pub review_reload: ActionKeybinds,
+    pub review_vs_origin: ActionKeybinds,
     pub custom_commands: Vec<CustomCommandKeybind>,
 }
 
@@ -501,6 +504,9 @@ impl Config {
             zoom: empty_action!(),
             resize_mode: empty_action!(),
             toggle_sidebar: empty_action!(),
+            review_toggle: empty_action!(),
+            review_reload: empty_action!(),
+            review_vs_origin: empty_action!(),
             custom_commands: Vec::new(),
         };
 
@@ -644,6 +650,9 @@ impl Config {
             apply_action!(keybinds.zoom, zoom, source);
             apply_action!(keybinds.resize_mode, resize_mode, source);
             apply_action!(keybinds.toggle_sidebar, toggle_sidebar, source);
+            apply_action!(keybinds.review_toggle, review_toggle, source);
+            apply_action!(keybinds.review_reload, review_reload, source);
+            apply_action!(keybinds.review_vs_origin, review_vs_origin, source);
 
             if source == field_source!(indexed) {
                 append_legacy_indexed_bindings(

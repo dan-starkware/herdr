@@ -516,6 +516,8 @@ impl App {
             request_new_agent_worktree: None,
             request_review_diff: None,
             request_review_diff_pick: None,
+            request_review_row: None,
+            review_vs_origin: std::collections::HashSet::new(),
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -924,6 +926,15 @@ impl App {
 
         if let Some(ws_idx) = self.state.request_review_diff_pick.take() {
             self.open_review_diff_branch_picker(ws_idx);
+            handled = true;
+        }
+
+        if let Some((ws_idx, action)) = self.state.request_review_row.take() {
+            match action {
+                crate::app::state::ReviewRowAction::Toggle => self.toggle_review_row(ws_idx),
+                crate::app::state::ReviewRowAction::Reload => self.reload_review_row(ws_idx),
+                crate::app::state::ReviewRowAction::VsOrigin => self.review_row_vs_origin(ws_idx),
+            }
             handled = true;
         }
 
@@ -3280,6 +3291,22 @@ mod tests {
         app.state.request_review_diff_pick = Some(999);
         assert!(app.process_deferred_requests());
         assert!(app.state.request_review_diff_pick.is_none());
+    }
+
+    #[test]
+    fn process_deferred_requests_consumes_review_row() {
+        // Out-of-range index: each review-row action returns early (no PTY
+        // spawn), but the shared loop must still consume the flag.
+        for action in [
+            crate::app::state::ReviewRowAction::Toggle,
+            crate::app::state::ReviewRowAction::Reload,
+            crate::app::state::ReviewRowAction::VsOrigin,
+        ] {
+            let mut app = test_app();
+            app.state.request_review_row = Some((999, action));
+            assert!(app.process_deferred_requests());
+            assert!(app.state.request_review_row.is_none());
+        }
     }
 
     #[test]

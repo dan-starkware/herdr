@@ -11,7 +11,7 @@ use crate::events::AppEvent;
 use crate::layout::PaneId;
 #[cfg(test)]
 use crate::layout::TileLayout;
-use crate::pane::{PaneLaunchEnv, PaneState};
+use crate::pane::{PaneLaunchEnv, PaneRole, PaneState};
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
 
 mod aggregate;
@@ -1148,6 +1148,71 @@ impl Workspace {
         self.active_tab().map(|tab| tab.layout.focused())
     }
 
+    /// The agent (root) pane of the active tab — always the bottom row.
+    pub fn agent_pane(&self) -> Option<PaneId> {
+        self.active_tab().map(|tab| tab.root_pane)
+    }
+
+    /// The pane in the active tab currently carrying `role`, if any.
+    pub fn pane_with_role(&self, role: PaneRole) -> Option<PaneId> {
+        let tab = self.active_tab()?;
+        tab.panes
+            .iter()
+            .find(|(_, pane)| pane.role == role)
+            .map(|(id, _)| *id)
+    }
+
+    /// Spawn a review row running `argv`, stacked above the agent (root) pane in
+    /// the active tab and tagged [`PaneRole::Review`]. Returns the new pane's
+    /// terminal + runtime for the caller to register, or `None` when there is no
+    /// agent pane. The spawned PTY is focused so the user lands in the diff.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_review_row(
+        &mut self,
+        rows: u16,
+        cols: u16,
+        cwd: Option<PathBuf>,
+        argv: &[String],
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+    ) -> Option<std::io::Result<crate::workspace::tab::NewPane>> {
+        let agent = self.agent_pane()?;
+        let result = self.split_pane_argv_command(
+            agent,
+            Direction::Vertical,
+            rows,
+            cols,
+            cwd,
+            argv,
+            Vec::new(),
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            true,
+        )?;
+        match result {
+            Ok((_tab_idx, new_pane)) => {
+                self.promote_to_review_row(new_pane.pane_id);
+                Some(Ok(new_pane))
+            }
+            Err(err) => Some(Err(err)),
+        }
+    }
+
+    /// Move `new_pane` to sit above the agent (root) row of its tab and tag it
+    /// [`PaneRole::Review`]. `split_focused` places a new pane below the agent;
+    /// the swap puts the review on top while the agent stays the bottom root.
+    fn promote_to_review_row(&mut self, new_pane: PaneId) {
+        let Some(tab_idx) = self.find_tab_index_for_pane(new_pane) else {
+            return;
+        };
+        let agent = self.tabs[tab_idx].root_pane;
+        let tab = &mut self.tabs[tab_idx];
+        tab.layout.swap_panes(agent, new_pane);
+        if let Some(pane) = tab.panes.get_mut(&new_pane) {
+            pane.role = PaneRole::Review;
+        }
+    }
+
     pub fn close_pane(&mut self, pane_id: PaneId) -> bool {
         let tab_idx = match self.find_tab_index_for_pane(pane_id) {
             Some(idx) => idx,
@@ -1462,6 +1527,40 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_pane_is_the_tab_root() {
+        let ws = Workspace::test_new("review");
+        let root = ws.active_tab().unwrap().root_pane;
+        assert_eq!(ws.agent_pane(), Some(root));
+    }
+
+    #[test]
+    fn pane_with_role_is_none_without_a_review_row() {
+        let ws = Workspace::test_new("review");
+        assert_eq!(ws.pane_with_role(PaneRole::Review), None);
+        // The lone agent pane carries the default Agent role.
+        assert_eq!(ws.pane_with_role(PaneRole::Agent), ws.agent_pane());
+    }
+
+    #[test]
+    fn promote_to_review_row_tags_role_and_keeps_agent_as_root() {
+        let mut ws = Workspace::test_new("review");
+        let agent = ws.agent_pane().unwrap();
+        // `test_split` splits the focused (root/agent) pane, placing the new
+        // pane below it — the same shape `open_review_row` produces.
+        let new = ws.test_split(Direction::Vertical);
+
+        ws.promote_to_review_row(new);
+
+        assert_eq!(ws.pane_with_role(PaneRole::Review), Some(new));
+        assert_eq!(
+            ws.agent_pane(),
+            Some(agent),
+            "agent stays the bottom root row"
+        );
+        assert_eq!(ws.active_tab().unwrap().layout.pane_count(), 2);
+    }
 
     #[test]
     fn generated_workspace_ids_are_short_base32_handles() {

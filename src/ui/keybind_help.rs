@@ -155,6 +155,13 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
     ];
     groups.push(("panes", panes));
 
+    let review = vec![
+        help_entry(keybind_label(&kb.review_toggle), "toggle review diff"),
+        help_entry(keybind_label(&kb.review_reload), "reload review diff"),
+        help_entry(keybind_label(&kb.review_vs_origin), "review vs origin"),
+    ];
+    groups.push(("review", review));
+
     if !kb.custom_commands.is_empty() {
         groups.push((
             "custom",

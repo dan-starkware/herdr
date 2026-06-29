@@ -696,28 +696,9 @@ impl App {
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return;
         };
-        let cwd = ws
-            .worktree_space()
-            .map(|space| space.checkout_path.clone())
-            .unwrap_or_else(|| ws.identity_cwd.clone());
+        let cwd = review_diff_cwd(ws);
         let base = base_override.unwrap_or_else(|| crate::worktree::review_diff_base(&cwd));
-
-        let shell = crate::pane::pane_shell(&self.state.default_shell);
-        let command_line = match std::env::var("HERDR_REVIEW_CMD") {
-            Ok(cmd) if !cmd.trim().is_empty() => {
-                format!("{cmd} {}", shell_single_quote(&base))
-            }
-            // Force color (git only colorizes a TTY) and page with `less -R`
-            // *without* `-F`, so the diff tab stays open and scrollable. A bare
-            // `git diff` uses git's `less -FRX`, which quits immediately when the
-            // diff fits one screen — the pane then exits and looks like nothing
-            // happened.
-            _ => format!(
-                "git -c color.ui=always diff {}...HEAD | less -R",
-                shell_single_quote(&base)
-            ),
-        };
-        let argv = vec![shell, "-ic".to_string(), command_line];
+        let argv = self.review_diff_argv(&base);
 
         let scrollback = self.state.pane_scrollback_limit_bytes;
         let theme = self.state.host_terminal_theme;
@@ -781,6 +762,144 @@ impl App {
             crate::app::state::BranchChooserIntent::ReviewDiff { ws_idx },
         );
     }
+
+    /// Build the argv for a review diff against `base`: an external reviewer when
+    /// `HERDR_REVIEW_CMD` is set (run as `<cmd> <base>`, e.g. vimrev/delta),
+    /// otherwise `git diff <base>...HEAD` paged through `less`.
+    fn review_diff_argv(&self, base: &str) -> Vec<String> {
+        let shell = crate::pane::pane_shell(&self.state.default_shell);
+        let command_line = match std::env::var("HERDR_REVIEW_CMD") {
+            Ok(cmd) if !cmd.trim().is_empty() => {
+                format!("{cmd} {}", shell_single_quote(base))
+            }
+            // Force color (git only colorizes a TTY) and page with `less -R`
+            // *without* `-F`, so the row stays open and scrollable. A bare
+            // `git diff` uses git's `less -FRX`, which quits immediately when the
+            // diff fits one screen — the pane then exits and looks like nothing
+            // happened.
+            _ => format!(
+                "git -c color.ui=always diff {}...HEAD | less -R",
+                shell_single_quote(base)
+            ),
+        };
+        vec![shell, "-ic".to_string(), command_line]
+    }
+
+    /// The diff base for `ws_idx`'s review row: the branch's own remote
+    /// (`origin/<branch>`) when vs-origin is active for this workspace —
+    /// surfacing unpushed commits and uncommitted changes — otherwise the
+    /// Graphite parent / default branch of the checkout.
+    fn review_row_base(&self, ws_idx: usize) -> Option<String> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        if self.state.review_vs_origin.contains(&ws.id) {
+            if let Some(branch) = ws.branch() {
+                return Some(format!("origin/{branch}"));
+            }
+        }
+        Some(crate::worktree::review_diff_base(&review_diff_cwd(ws)))
+    }
+
+    /// Toggle the active review row for `ws_idx`: close it if open, otherwise
+    /// open a fresh one against the branch's normal base (clearing vs-origin).
+    pub(crate) fn toggle_review_row(&mut self, ws_idx: usize) {
+        if self.close_review_row(ws_idx) {
+            return;
+        }
+        if let Some(ws) = self.state.workspaces.get(ws_idx) {
+            let id = ws.id.clone();
+            self.state.review_vs_origin.remove(&id);
+        }
+        self.spawn_review_row(ws_idx);
+    }
+
+    /// Reload `ws_idx`'s review row in place, preserving its current base mode
+    /// (picks up new commits or a moved base). Opens one if none is showing.
+    pub(crate) fn reload_review_row(&mut self, ws_idx: usize) {
+        self.close_review_row(ws_idx);
+        self.spawn_review_row(ws_idx);
+    }
+
+    /// Diff `ws_idx`'s branch against its own remote (`origin/<branch>`): mark
+    /// the workspace vs-origin and (re)open the review row.
+    pub(crate) fn review_row_vs_origin(&mut self, ws_idx: usize) {
+        if let Some(ws) = self.state.workspaces.get(ws_idx) {
+            let id = ws.id.clone();
+            self.state.review_vs_origin.insert(id);
+        }
+        self.close_review_row(ws_idx);
+        self.spawn_review_row(ws_idx);
+    }
+
+    /// Close the active tab's review row (if any), queuing its terminal for
+    /// shutdown. Returns whether a review row was open.
+    fn close_review_row(&mut self, ws_idx: usize) -> bool {
+        let Some(review) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_with_role(crate::pane::PaneRole::Review))
+        else {
+            return false;
+        };
+        let terminal_id = self
+            .state
+            .terminal_id_for_pane(ws_idx, review)
+            .into_iter()
+            .collect::<Vec<_>>();
+        if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
+            ws.close_pane(review);
+        }
+        self.state.remove_unattached_terminal_ids(terminal_id);
+        self.state.mark_session_dirty();
+        true
+    }
+
+    /// Spawn a review row above the agent in `ws_idx`'s active tab, diffing
+    /// against [`Self::review_row_base`]. No-op (with a diagnostic) on failure.
+    fn spawn_review_row(&mut self, ws_idx: usize) {
+        let Some(base) = self.review_row_base(ws_idx) else {
+            return;
+        };
+        let cwd = self.state.workspaces.get(ws_idx).map(review_diff_cwd);
+        let argv = self.review_diff_argv(&base);
+        let scrollback = self.state.pane_scrollback_limit_bytes;
+        let theme = self.state.host_terminal_theme;
+        let (rows, cols) = self.state.estimate_pane_size();
+        let previous_focus = self.state.current_pane_focus_target();
+        let result = {
+            let Some(ws_mut) = self.state.workspaces.get_mut(ws_idx) else {
+                return;
+            };
+            ws_mut.open_review_row(rows, cols, cwd, &argv, scrollback, theme)
+        };
+        match result {
+            Some(Ok(new_pane)) => {
+                let new_id = new_pane.pane_id;
+                self.terminal_runtimes
+                    .insert(new_pane.terminal.id.clone(), new_pane.runtime);
+                self.state.remove_alias_shadowed_by_new_pane(new_id);
+                self.state
+                    .terminals
+                    .insert(new_pane.terminal.id.clone(), new_pane.terminal);
+                self.state
+                    .record_pane_focus_change(previous_focus, ws_idx, new_id);
+                self.state.mark_session_dirty();
+                self.state.mode = Mode::Terminal;
+            }
+            Some(Err(err)) => {
+                self.set_transient_diagnostic(format!("review diff failed: {err}"));
+            }
+            None => {}
+        }
+    }
+}
+
+/// The checkout directory a workspace's review diff runs in: its linked
+/// worktree checkout, else the workspace's identity cwd.
+fn review_diff_cwd(ws: &crate::workspace::Workspace) -> std::path::PathBuf {
+    ws.worktree_space()
+        .map(|space| space.checkout_path.clone())
+        .unwrap_or_else(|| ws.identity_cwd.clone())
 }
 
 /// POSIX single-quote `value` so it survives as one argument in a shell command

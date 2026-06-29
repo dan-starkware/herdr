@@ -401,6 +401,13 @@ pub struct KeysConfig {
     pub resize_mode: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
     pub toggle_sidebar: BindingConfig,
+    /// Toggle the review diff row above the agent. Default: "prefix+d"
+    pub review_toggle: BindingConfig,
+    /// Reload the review diff row in place. Default: "prefix+f"
+    pub review_reload: BindingConfig,
+    /// Diff the branch against its own remote (`origin/<branch>`). Default:
+    /// "prefix+shift+f"
+    pub review_vs_origin: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
     pub indexed: IndexedKeysConfig,
     /// Prefix-mode custom command bindings.
@@ -524,6 +531,12 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_sidebar: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    review_toggle: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review_reload: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review_vs_origin: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
     #[serde(skip_serializing)]
     command: Option<Vec<CommandKeybindConfig>>,
@@ -601,6 +614,9 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(zoom);
         apply_field!(resize_mode);
         apply_field!(toggle_sidebar);
+        apply_field!(review_toggle);
+        apply_field!(review_reload);
+        apply_field!(review_vs_origin);
         apply_field!(indexed);
         apply_field!(command);
 
@@ -961,6 +977,9 @@ impl Default for KeysConfig {
             zoom: BindingConfig::one("prefix+z"),
             resize_mode: BindingConfig::one("prefix+r"),
             toggle_sidebar: BindingConfig::one("prefix+b"),
+            review_toggle: BindingConfig::one("prefix+d"),
+            review_reload: BindingConfig::one("prefix+f"),
+            review_vs_origin: BindingConfig::one("prefix+shift+f"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
             user_fields: BTreeSet::new(),

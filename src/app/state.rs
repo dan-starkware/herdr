@@ -1381,6 +1381,18 @@ pub(crate) struct PaneFocusTarget {
     pub pane_id: PaneId,
 }
 
+/// Which review-row action a keybind requested for a workspace. Consumed by the
+/// App loop, which owns the runtime needed to spawn/close the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewRowAction {
+    /// Open the review row if closed, else close it.
+    Toggle,
+    /// Re-run the diff in place, preserving the current base mode.
+    Reload,
+    /// Diff the branch against its own remote (`origin/<branch>`).
+    VsOrigin,
+}
+
 /// All application state — pure data, no channels or async runtime.
 /// Testable without PTYs or a tokio runtime.
 pub struct AppState {
@@ -1418,6 +1430,14 @@ pub struct AppState {
     /// diff: opens the branch chooser (with `ReviewDiff` intent) for this
     /// workspace's repo.
     pub request_review_diff_pick: Option<usize>,
+    /// Set when a keybind requested a review-row action for `(workspace index,
+    /// action)`. Consumed by the App loop, which owns the terminal runtime.
+    pub request_review_row: Option<(usize, ReviewRowAction)>,
+    /// Workspace ids whose review row should diff against the branch's own
+    /// remote (`origin/<branch>`) instead of its Graphite parent / default
+    /// branch. Toggled by the vs-origin review action; presentation-only, keyed
+    /// by stable workspace id so it survives reordering.
+    pub review_vs_origin: std::collections::HashSet<String>,
     pub request_submit_worktree_create: bool,
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
@@ -1803,6 +1823,8 @@ impl AppState {
             request_new_agent_worktree: None,
             request_review_diff: None,
             request_review_diff_pick: None,
+            request_review_row: None,
+            review_vs_origin: std::collections::HashSet::new(),
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
