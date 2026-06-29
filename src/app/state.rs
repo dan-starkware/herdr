@@ -1438,6 +1438,10 @@ pub struct AppState {
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
+    /// Most recent personal PR inbox snapshot.
+    pub pr_inbox: crate::pr_inbox::PullRequestInbox,
+    /// Scroll offset for the PR inbox display.
+    pub pr_inbox_scroll: usize,
 }
 
 impl AppState {
@@ -1790,6 +1794,8 @@ impl AppState {
             host_terminal_theme: TerminalTheme::default(),
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
+            pr_inbox: crate::pr_inbox::PullRequestInbox::default(),
+            pr_inbox_scroll: 0,
         }
     }
 

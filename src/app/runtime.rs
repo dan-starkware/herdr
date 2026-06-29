@@ -266,6 +266,7 @@ impl App {
         changed |= self.clear_due_selection_highlight(now);
 
         self.start_git_status_refresh_if_due(now);
+        self.start_pr_inbox_refresh_if_due(now);
 
         if self
             .next_auto_update_check
@@ -521,6 +522,35 @@ impl App {
             .then_some(self.last_git_remote_status_refresh + GIT_REMOTE_STATUS_REFRESH_INTERVAL)
     }
 
+    pub(crate) fn pr_inbox_refresh_deadline(&self) -> Option<Instant> {
+        (!self.pr_inbox_refresh_in_flight)
+            .then_some(self.last_pr_inbox_refresh + crate::app::PR_INBOX_REFRESH_INTERVAL)
+    }
+
+    pub(crate) fn start_pr_inbox_refresh_if_due(&mut self, now: Instant) {
+        let Some(deadline) = self.pr_inbox_refresh_deadline() else {
+            return;
+        };
+        if now < deadline {
+            return;
+        }
+        self.pr_inbox_refresh_in_flight = true;
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let inbox = crate::pr_inbox::fetch_pr_inbox();
+            let _ = event_tx.blocking_send(crate::events::AppEvent::PrInboxRefreshed { inbox });
+        });
+    }
+
+    pub(crate) fn mark_pr_inbox_refresh_due(&mut self, now: Instant) {
+        if self.pr_inbox_refresh_in_flight {
+            return;
+        }
+        self.last_pr_inbox_refresh = now
+            .checked_sub(crate::app::PR_INBOX_REFRESH_INTERVAL)
+            .unwrap_or(now);
+    }
+
     pub(crate) fn next_loop_deadline(&self, now: Instant, needs_render: bool) -> Option<Instant> {
         self.next_loop_deadline_with_resize_poll(now, needs_render, true, true)
     }
@@ -558,6 +588,9 @@ impl App {
             self.next_animation_tick,
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
+                .flatten(),
+            include_git_refresh
+                .then(|| self.pr_inbox_refresh_deadline())
                 .flatten(),
             self.next_auto_update_check,
             self.next_agent_manifest_update_check,

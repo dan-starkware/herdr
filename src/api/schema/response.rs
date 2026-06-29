@@ -224,6 +224,11 @@ pub enum ResponseResult {
         status: crate::config::ConfigReloadStatus,
         diagnostics: Vec<String>,
     },
+    PrInboxList {
+        prs: Vec<crate::pr_inbox::PullRequestSummary>,
+        #[serde(flatten)]
+        status: crate::pr_inbox::PullRequestInboxStatus,
+    },
     Ok {},
 }
 

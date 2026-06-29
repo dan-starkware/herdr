@@ -68,6 +68,8 @@ pub enum Subscription {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_status: Option<AgentStatus>,
     },
+    #[serde(rename = "pr_inbox.refreshed")]
+    PrInboxRefreshed {},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +194,7 @@ pub enum EventKind {
     PaneExited,
     PaneAgentDetected,
     PaneAgentStatusChanged,
+    PrInboxRefreshed,
 }
 
 impl EventKind {
@@ -217,6 +220,7 @@ impl EventKind {
             EventKind::PaneExited => "pane.exited",
             EventKind::PaneAgentDetected => "pane.agent_detected",
             EventKind::PaneAgentStatusChanged => "pane.agent_status_changed",
+            EventKind::PrInboxRefreshed => "pr_inbox.refreshed",
         }
     }
 }
@@ -243,6 +247,7 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneExited,
     EventKind::PaneAgentDetected,
     EventKind::PaneAgentStatusChanged,
+    EventKind::PrInboxRefreshed,
 ];
 
 pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
@@ -473,4 +478,29 @@ pub enum EventData {
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         state_labels: HashMap<String, String>,
     },
+    PrInboxRefreshed {
+        prs: Vec<crate::pr_inbox::PullRequestSummary>,
+        #[serde(flatten)]
+        status: crate::pr_inbox::PullRequestInboxStatus,
+    },
+}
+
+#[cfg(test)]
+mod pr_inbox_event_tests {
+    use super::*;
+
+    #[test]
+    fn pr_inbox_refreshed_event_round_trips() {
+        let env = EventEnvelope {
+            event: EventKind::PrInboxRefreshed,
+            data: EventData::PrInboxRefreshed {
+                prs: vec![],
+                status: crate::pr_inbox::PullRequestInboxStatus::Ok,
+            },
+        };
+        let json = serde_json::to_string(&env).expect("serializes");
+        let back: EventEnvelope = serde_json::from_str(&json).expect("round trips");
+        assert_eq!(back.event, EventKind::PrInboxRefreshed);
+        assert_eq!(EventKind::PrInboxRefreshed.dot_name(), "pr_inbox.refreshed");
+    }
 }
