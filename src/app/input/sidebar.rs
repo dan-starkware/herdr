@@ -1142,6 +1142,44 @@ mod tests {
     }
 
     #[test]
+    fn clicking_synthesized_repo_header_toggles_group_collapse() {
+        let mut app = app_for_mouse_test();
+        // Two linked worktrees, no open primary checkout -> synthesized header.
+        app.state.workspaces = vec![
+            Workspace::test_new("issue-a"),
+            Workspace::test_new("issue-b"),
+        ];
+        for (idx, checkout_path) in ["/repo/herdr-a", "/repo/herdr-b"].into_iter().enumerate() {
+            app.state.workspaces[idx].worktree_space =
+                Some(crate::workspace::WorktreeSpaceMembership {
+                    key: "repo-key".into(),
+                    label: "herdr".into(),
+                    repo_root: "/repo/herdr".into(),
+                    checkout_path: checkout_path.into(),
+                    is_linked_worktree: true,
+                });
+        }
+        app.state.active = None;
+        app.state.mode = Mode::Terminal;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let header = app.state.view.workspace_header_areas[0].rect;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            header.x,
+            header.y,
+        ));
+        assert!(app.state.collapsed_space_keys.contains("repo-key"));
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            header.x,
+            header.y,
+        ));
+        assert!(!app.state.collapsed_space_keys.contains("repo-key"));
+    }
+
+    #[test]
     fn wheel_workspace_selection_follows_grouped_visual_order_without_scrollbar() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![

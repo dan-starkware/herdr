@@ -536,6 +536,30 @@ impl AppState {
                         }
                     }
 
+                    // Synthesized repo headers (no open primary checkout) have no
+                    // workspace to select, so a click anywhere on the row toggles
+                    // the worktree group's collapse, matching the rendered caret.
+                    if let Some(key) = self
+                        .view
+                        .workspace_header_areas
+                        .iter()
+                        .find(|header| {
+                            mouse.column >= header.rect.x
+                                && mouse.column < header.rect.x + header.rect.width
+                                && mouse.row >= header.rect.y
+                                && mouse.row < header.rect.y + header.rect.height
+                        })
+                        .map(|header| header.key.clone())
+                    {
+                        if self.collapsed_space_keys.contains(&key) {
+                            self.collapsed_space_keys.remove(&key);
+                        } else {
+                            self.collapsed_space_keys.insert(key);
+                        }
+                        self.mark_session_dirty();
+                        return None;
+                    }
+
                     if let Some(idx) = self.workspace_at_row(mouse.row) {
                         self.workspace_press = Some(WorkspacePressState {
                             ws_idx: idx,
