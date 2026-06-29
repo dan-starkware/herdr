@@ -54,23 +54,31 @@ pub fn git_status_snapshot_for_cwd(
     cached: Option<&GitStatusCacheEntry>,
 ) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
     let space = git_space_metadata(cwd);
+    let is_linked_worktree = space.as_ref().is_some_and(|space| space.is_linked_worktree);
     let Some(fingerprint) = git_status_fingerprint(cwd) else {
         return (
             WorkspaceGitStatusSnapshot {
                 branch: git_branch(cwd),
                 ahead_behind: None,
                 space,
+                diff_stats: None,
             },
             None,
         );
     };
     let branch = fingerprint.branch_name().map(str::to_string);
 
+    // Diff stats are recomputed every refresh and never cached: the working
+    // tree (wip) changes without moving HEAD, so they cannot ride the
+    // HEAD/upstream fingerprint. They are only shown for linked worktrees.
+    let diff_stats = is_linked_worktree.then(|| worktree_diff_stats(cwd));
+
     if let Some(cached) = cached.filter(|entry| entry.fingerprint == fingerprint) {
         let snapshot = WorkspaceGitStatusSnapshot {
             branch,
             ahead_behind: cached.snapshot.ahead_behind,
             space,
+            diff_stats,
         };
         return (
             snapshot.clone(),
@@ -89,6 +97,7 @@ pub fn git_status_snapshot_for_cwd(
         branch,
         ahead_behind,
         space,
+        diff_stats,
     };
     (
         snapshot.clone(),
@@ -97,6 +106,52 @@ pub fn git_status_snapshot_for_cwd(
             snapshot,
         }),
     )
+}
+
+/// Compute a worktree's committed (`base...HEAD`) and uncommitted (`diff HEAD`)
+/// diff sizes. The committed base reuses the same graphite-aware resolver as the
+/// diff-vs-parent review action, so the sidebar matches what review shows.
+fn worktree_diff_stats(cwd: &Path) -> crate::workspace::WorktreeDiffStats {
+    let wip = git_shortstat(cwd, &["diff", "--shortstat", "HEAD"]).unwrap_or_default();
+    let base = crate::worktree::review_diff_base(cwd);
+    let committed =
+        git_shortstat(cwd, &["diff", "--shortstat", &format!("{base}...HEAD")]).unwrap_or_default();
+    crate::workspace::WorktreeDiffStats { committed, wip }
+}
+
+fn git_shortstat(cwd: &Path, args: &[&str]) -> Option<crate::workspace::GitDiffStat> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(parse_shortstat(&String::from_utf8(output.stdout).ok()?))
+}
+
+/// Parse `git diff --shortstat` output, e.g.
+/// ` 3 files changed, 12 insertions(+), 4 deletions(-)`.
+fn parse_shortstat(stdout: &str) -> crate::workspace::GitDiffStat {
+    let mut stat = crate::workspace::GitDiffStat::default();
+    for part in stdout.split(',') {
+        let part = part.trim();
+        let Some(count) = part
+            .split_whitespace()
+            .next()
+            .and_then(|token| token.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        if part.contains("insertion") {
+            stat.added = count;
+        } else if part.contains("deletion") {
+            stat.removed = count;
+        }
+    }
+    stat
 }
 
 pub(super) fn git_status_fingerprint(cwd: &Path) -> Option<GitStatusFingerprint> {
@@ -246,6 +301,26 @@ mod tests {
     use crate::workspace::git::test_support::{run_git, temp_test_dir, write_fake_tracked_repo};
 
     #[test]
+    fn parse_shortstat_extracts_insertions_and_deletions() {
+        let stat = parse_shortstat(" 3 files changed, 12 insertions(+), 4 deletions(-)\n");
+        assert_eq!(stat.added, 12);
+        assert_eq!(stat.removed, 4);
+    }
+
+    #[test]
+    fn parse_shortstat_handles_insertions_only_and_empty() {
+        let only_added = parse_shortstat(" 1 file changed, 5 insertions(+)\n");
+        assert_eq!(only_added.added, 5);
+        assert_eq!(only_added.removed, 0);
+
+        let only_removed = parse_shortstat(" 2 files changed, 7 deletions(-)\n");
+        assert_eq!(only_removed.added, 0);
+        assert_eq!(only_removed.removed, 7);
+
+        assert!(parse_shortstat("").is_empty());
+    }
+
+    #[test]
     fn git_status_cache_key_ignores_invalid_git_marker() {
         let base = temp_test_dir("invalid-git-root");
         let cwd = base.join("workspace");
@@ -268,6 +343,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((2, 1)),
                 space: git_space_metadata(&root),
+                diff_stats: None,
             },
         };
 
@@ -291,6 +367,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((4, 0)),
                 space: git_space_metadata(&root),
+                diff_stats: None,
             },
         };
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n").unwrap();
@@ -324,6 +401,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((0, 3)),
                 space: git_space_metadata(&root),
+                diff_stats: None,
             },
         };
         std::fs::write(root.join(".git/config"), "").unwrap();

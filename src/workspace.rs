@@ -38,6 +38,27 @@ pub struct WorktreeSpaceMembership {
     pub is_linked_worktree: bool,
 }
 
+/// Added/removed line counts from a `git diff --shortstat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GitDiffStat {
+    pub added: usize,
+    pub removed: usize,
+}
+
+impl GitDiffStat {
+    pub fn is_empty(&self) -> bool {
+        self.added == 0 && self.removed == 0
+    }
+}
+
+/// Diff size of a worktree: committed work since forking from the base branch
+/// (`base...HEAD`) and uncommitted working-tree changes (`diff HEAD`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WorktreeDiffStats {
+    pub committed: GitDiffStat,
+    pub wip: GitDiffStat,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceGitStatus {
     pub workspace_id: String,
@@ -45,6 +66,7 @@ pub struct WorkspaceGitStatus {
     pub branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
+    pub diff_stats: Option<WorktreeDiffStats>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +74,8 @@ pub struct WorkspaceGitStatusSnapshot {
     pub branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
+    /// Present only for linked worktrees; `None` elsewhere.
+    pub diff_stats: Option<WorktreeDiffStats>,
 }
 
 impl WorkspaceGitStatusSnapshot {
@@ -66,6 +90,7 @@ impl WorkspaceGitStatusSnapshot {
             branch: self.branch,
             ahead_behind: self.ahead_behind,
             space: self.space,
+            diff_stats: self.diff_stats,
         }
     }
 }
@@ -153,6 +178,8 @@ pub struct Workspace {
     pub(crate) cached_git_branch: Option<String>,
     /// Cached ahead/behind counts for the workspace repo's current branch upstream.
     pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
+    /// Cached committed/uncommitted diff sizes for linked worktrees.
+    pub(crate) cached_git_diff_stats: Option<WorktreeDiffStats>,
     /// Cached derived Git repo metadata for worktree actions and status display.
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     /// Explicit Herdr-managed worktree grouping provenance.
@@ -214,6 +241,7 @@ impl Workspace {
             identity_cwd: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
             cached_git_ahead_behind: None,
+            cached_git_diff_stats: None,
             cached_git_space: git_space_metadata(&identity_cwd),
             worktree_space: None,
             public_pane_numbers,
@@ -395,6 +423,7 @@ impl Workspace {
                 identity_cwd: initial_cwd.clone(),
                 cached_git_branch: git_branch(&initial_cwd),
                 cached_git_ahead_behind: None,
+                cached_git_diff_stats: None,
                 cached_git_space: None,
                 worktree_space: None,
                 public_pane_numbers,
@@ -1074,6 +1103,10 @@ impl Workspace {
         self.cached_git_ahead_behind
     }
 
+    pub fn git_diff_stats(&self) -> Option<WorktreeDiffStats> {
+        self.cached_git_diff_stats
+    }
+
     pub fn git_space(&self) -> Option<&GitSpaceMetadata> {
         self.cached_git_space.as_ref()
     }
@@ -1202,6 +1235,7 @@ impl Workspace {
             identity_cwd: identity_cwd.clone(),
             cached_git_branch: git_branch(&identity_cwd),
             cached_git_ahead_behind: None,
+            cached_git_diff_stats: None,
             cached_git_space: None,
             worktree_space: None,
             public_pane_numbers,

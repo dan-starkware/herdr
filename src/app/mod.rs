@@ -1966,6 +1966,7 @@ mod tests {
                 branch: Some("render-dirty-test".into()),
                 ahead_behind: Some((1, 0)),
                 space: None,
+                diff_stats: None,
             }],
             cache_updates: Vec::new(),
         });

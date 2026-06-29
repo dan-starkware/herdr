@@ -238,6 +238,47 @@ fn workspace_row_height(ws: &crate::workspace::Workspace) -> u16 {
     }
 }
 
+/// Spans for a worktree child's diff-stats sub-line: committed (`base...HEAD`)
+/// then uncommitted working changes, e.g. `+412 -98  ·  ~18 -3` or `… · clean`.
+/// Renders a muted placeholder until the first git refresh populates the stats.
+fn worktree_stats_spans(
+    stats: Option<crate::workspace::WorktreeDiffStats>,
+    p: &Palette,
+) -> Vec<Span<'static>> {
+    let dim = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
+    let indent = Span::styled("       ", Style::default());
+    let Some(stats) = stats else {
+        return vec![indent, Span::styled("—", dim)];
+    };
+    let mut spans = vec![
+        indent,
+        Span::styled(
+            format!("+{}", stats.committed.added),
+            Style::default().fg(p.green),
+        ),
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            format!("-{}", stats.committed.removed),
+            Style::default().fg(p.red),
+        ),
+        Span::styled("  ·  ", dim),
+    ];
+    if stats.wip.is_empty() {
+        spans.push(Span::styled("clean", dim));
+    } else {
+        spans.push(Span::styled(
+            format!("~{}", stats.wip.added),
+            Style::default().fg(p.yellow),
+        ));
+        spans.push(Span::styled(" ", Style::default()));
+        spans.push(Span::styled(
+            format!("-{}", stats.wip.removed),
+            Style::default().fg(p.red),
+        ));
+    }
+    spans
+}
+
 fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
     match (state, seen) {
         (AgentState::Blocked, _) => 4,
@@ -314,6 +355,9 @@ pub(crate) enum WorkspaceListEntry {
 /// Row height of a synthesized repo group header (the repo name only).
 const REPO_HEADER_ROW_HEIGHT: u16 = 1;
 
+/// Row height of an indented worktree child: branch line + diff-stats sub-line.
+const CHILD_ROW_HEIGHT: u16 = 2;
+
 fn workspace_repo_group(
     ws: &crate::workspace::Workspace,
 ) -> Option<(&str, &std::path::Path, bool)> {
@@ -389,9 +433,7 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
     } else {
         app.active
     };
-    let active_group = visible_group_idx
-        .and_then(|idx| role(idx))
-        .map(|(key, _)| key);
+    let active_group = visible_group_idx.and_then(&role).map(|(key, _)| key);
 
     let mut emitted_groups = std::collections::HashSet::<&str>::new();
     let mut entries = Vec::new();
@@ -477,7 +519,7 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
                     continue;
                 };
                 let row_height = if *indented {
-                    1
+                    CHILD_ROW_HEIGHT
                 } else {
                     workspace_row_height(ws)
                 };
@@ -616,7 +658,7 @@ pub(crate) fn compute_workspace_list_areas(
                     continue;
                 };
                 let row_height = if *indented {
-                    1
+                    CHILD_ROW_HEIGHT
                 } else {
                     workspace_row_height(ws)
                 };
@@ -972,7 +1014,13 @@ fn render_workspace_list(
         );
 
         if row_height > 1 && row_y + 1 < list_bottom {
-            if let Some(branch) = ws.branch() {
+            if card.indented {
+                // Worktree child: diff-stats sub-line (committed · wip).
+                frame.render_widget(
+                    Paragraph::new(Line::from(worktree_stats_spans(ws.git_diff_stats(), p))),
+                    Rect::new(card.rect.x, row_y + 1, card.rect.width, 1),
+                );
+            } else if let Some(branch) = ws.branch() {
                 let upstream_label = ws.git_ahead_behind().and_then(|(ahead, behind)| {
                     let mut parts = Vec::new();
                     if ahead > 0 {
@@ -996,9 +1044,8 @@ fn render_workspace_list(
                 } else {
                     p.overlay0
                 };
-                let branch_indent = if card.indented { "     " } else { "   " };
                 let mut spans = vec![
-                    Span::styled(branch_indent, Style::default()),
+                    Span::styled("   ", Style::default()),
                     Span::styled(branch_display, Style::default().fg(branch_color)),
                 ];
                 if let Some(parts) = upstream_label {

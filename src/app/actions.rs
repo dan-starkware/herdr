@@ -2317,6 +2317,10 @@ impl AppState {
                 ws.cached_git_ahead_behind = result.ahead_behind;
                 changed = true;
             }
+            if ws.cached_git_diff_stats != result.diff_stats {
+                ws.cached_git_diff_stats = result.diff_stats;
+                changed = true;
+            }
             if ws.cached_git_space != result.space {
                 ws.cached_git_space = result.space;
                 changed = true;
@@ -3446,6 +3450,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((2, 1)),
                 space: None,
+                diff_stats: None,
             }],
         );
 
@@ -3472,6 +3477,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((0, 1)),
                 space: None,
+                diff_stats: None,
             }],
         );
 
@@ -3497,6 +3503,7 @@ mod tests {
                 branch: None,
                 ahead_behind: None,
                 space: None,
+                diff_stats: None,
             }],
         );
 
@@ -3528,6 +3535,7 @@ mod tests {
                     repo_root: "/other/repo".into(),
                     is_linked_worktree: false,
                 }),
+                diff_stats: None,
             }],
         );
 
