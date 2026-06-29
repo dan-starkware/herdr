@@ -266,6 +266,10 @@ impl App {
         changed |= self.clear_due_selection_highlight(now);
 
         self.start_git_status_refresh_if_due(now);
+        if self.state.request_pr_inbox_refresh {
+            self.state.request_pr_inbox_refresh = false;
+            self.mark_pr_inbox_refresh_due(now);
+        }
         self.start_pr_inbox_refresh_if_due(now);
 
         if self

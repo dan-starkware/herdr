@@ -612,6 +612,7 @@ pub(crate) enum NavigateAction {
     OpenNotificationTarget,
     Detach,
     OpenNavigator,
+    RefreshPrInbox,
 }
 
 fn indexed_navigation_action(
@@ -711,6 +712,7 @@ fn action_for_key(
         (&kb.resize_mode, NavigateAction::EnterResizeMode),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
         (&kb.reload_config, NavigateAction::ReloadConfig),
+        (&kb.refresh_pr_inbox, NavigateAction::RefreshPrInbox),
         (
             &kb.open_notification_target,
             NavigateAction::OpenNotificationTarget,
@@ -947,6 +949,10 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::OpenNavigator => state.open_navigator_from(terminal_runtimes),
+        NavigateAction::RefreshPrInbox => {
+            state.request_pr_inbox_refresh = true;
+            leave_navigate_mode(state);
+        }
     }
 
     finish_action_context(state, context, previous_mode);

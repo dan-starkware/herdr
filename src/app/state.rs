@@ -1298,6 +1298,7 @@ pub struct AppState {
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
     pub request_reload_config: bool,
+    pub request_pr_inbox_refresh: bool,
     /// Set when the headless server should ask attached clients to reload
     /// their client-local sound config from disk.
     pub request_client_config_reload: bool,
@@ -1663,6 +1664,7 @@ impl AppState {
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
             request_reload_config: false,
+            request_pr_inbox_refresh: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,

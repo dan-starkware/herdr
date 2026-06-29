@@ -273,6 +273,7 @@ pub struct Keybinds {
     pub goto: ActionKeybinds,
     pub detach: ActionKeybinds,
     pub reload_config: ActionKeybinds,
+    pub refresh_pr_inbox: ActionKeybinds,
     pub open_notification_target: ActionKeybinds,
     pub previous_workspace: ActionKeybinds,
     pub next_workspace: ActionKeybinds,
@@ -453,6 +454,7 @@ impl Config {
             goto: action!("keys.goto", &self.keys.goto),
             detach: action!("keys.detach", &self.keys.detach),
             reload_config: action!("keys.reload_config", &self.keys.reload_config),
+            refresh_pr_inbox: action!("keys.refresh_pr_inbox", &self.keys.refresh_pr_inbox),
             open_notification_target: action!(
                 "keys.open_notification_target",
                 &self.keys.open_notification_target
