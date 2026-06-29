@@ -3858,6 +3858,8 @@ mod tests {
         app.next_auto_update_check = None;
         app.session_save_deadline = None;
         app.state.workspaces.clear();
+        // Suppress the pr-inbox deadline so it does not contribute a future instant.
+        app.pr_inbox_refresh_in_flight = true;
 
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, true),
