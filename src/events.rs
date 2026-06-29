@@ -155,5 +155,7 @@ pub enum AppEvent {
     /// Background `git worktree remove` completed.
     WorktreeRemoveFinished(Box<WorktreeRemoveResult>),
     /// Background personal PR inbox refresh completed.
-    PrInboxRefreshed { inbox: crate::pr_inbox::PullRequestInbox },
+    PrInboxRefreshed {
+        inbox: crate::pr_inbox::PullRequestInbox,
+    },
 }

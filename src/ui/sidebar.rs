@@ -1104,10 +1104,7 @@ fn pr_inbox_visible_count(area: Rect) -> usize {
     (body.height / PR_ROW_HEIGHT) as usize
 }
 
-pub(crate) fn pr_inbox_scroll_metrics(
-    app: &AppState,
-    area: Rect,
-) -> crate::pane::ScrollMetrics {
+pub(crate) fn pr_inbox_scroll_metrics(app: &AppState, area: Rect) -> crate::pane::ScrollMetrics {
     let viewport_rows = pr_inbox_visible_count(area);
     let total_rows = app.pr_inbox.prs.len();
     let max_offset_from_bottom = total_rows.saturating_sub(viewport_rows);
@@ -1155,7 +1152,10 @@ fn render_pr_inbox(app: &AppState, frame: &mut Frame, area: Rect) {
         Rect::new(area.x, area.y + 1, area.width, 1),
     );
 
-    let body = pr_inbox_body_rect(area, should_show_scrollbar(pr_inbox_scroll_metrics(app, area)));
+    let body = pr_inbox_body_rect(
+        area,
+        should_show_scrollbar(pr_inbox_scroll_metrics(app, area)),
+    );
     if body == Rect::default() {
         return;
     }
@@ -1191,7 +1191,10 @@ fn render_pr_inbox(app: &AppState, frame: &mut Frame, area: Rect) {
         }
         PullRequestInboxStatus::Error { .. } => {
             frame.render_widget(
-                Paragraph::new(Span::styled(" error fetching prs", Style::default().fg(p.red))),
+                Paragraph::new(Span::styled(
+                    " error fetching prs",
+                    Style::default().fg(p.red),
+                )),
                 Rect::new(body.x, body.y, body.width, 1),
             );
             return;
@@ -1201,7 +1204,10 @@ fn render_pr_inbox(app: &AppState, frame: &mut Frame, area: Rect) {
 
     if app.pr_inbox.prs.is_empty() {
         frame.render_widget(
-            Paragraph::new(Span::styled(" no open prs", Style::default().fg(p.overlay0))),
+            Paragraph::new(Span::styled(
+                " no open prs",
+                Style::default().fg(p.overlay0),
+            )),
             Rect::new(body.x, body.y, body.width, 1),
         );
         return;
@@ -1226,10 +1232,7 @@ fn render_pr_inbox(app: &AppState, frame: &mut Frame, area: Rect) {
 
         let mut title_spans = vec![Span::styled(indent, Style::default())];
         if pr.is_draft {
-            title_spans.push(Span::styled(
-                "[draft] ",
-                Style::default().fg(p.overlay0),
-            ));
+            title_spans.push(Span::styled("[draft] ", Style::default().fg(p.overlay0)));
         }
         title_spans.push(Span::styled(
             title_display,
