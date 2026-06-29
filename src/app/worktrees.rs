@@ -620,7 +620,7 @@ impl App {
             }
         }
 
-        let (workspace_snapshot, worktree_snapshot) = self
+        let (workspace_snapshot, worktree_snapshot, branch_cleanup) = self
             .state
             .workspaces
             .iter()
@@ -631,9 +631,19 @@ impl App {
                     .worktree_space()
                     .cloned()
                     .map(|space| Box::new(self.worktree_info_for_membership(&space, None)));
-                (Some(workspace), worktree)
+                // After removing an agent worktree, clean up its now-orphaned
+                // branch — but never the repo's default base, and only for
+                // agent-created worktrees (the safe `git branch -d` later keeps
+                // any branch that still has unmerged unique commits).
+                let branch_cleanup = self
+                    .state
+                    .is_agent_worktree_workspace(ws_idx)
+                    .then(|| self.state.workspaces[ws_idx].branch())
+                    .flatten()
+                    .filter(|branch| *branch != crate::worktree::default_base_branch(&repo_root));
+                (Some(workspace), worktree, branch_cleanup)
             })
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
 
         let command = crate::worktree::build_worktree_remove_command(&repo_root, &path, force);
         tracing::info!(workspace_id = %workspace_id, path = %path.display(), force, "starting git worktree remove");
@@ -642,6 +652,12 @@ impl App {
             let result = crate::worktree::run_worktree_remove_command_with_recovery(
                 &command, &repo_root, &path, force,
             );
+            // Drop the orphaned agent branch once the checkout is gone.
+            if result.is_ok() {
+                if let Some(branch) = branch_cleanup {
+                    crate::worktree::try_delete_merged_branch(&repo_root, &branch);
+                }
+            }
             let _ = event_tx.blocking_send(AppEvent::WorktreeRemoveFinished(Box::new(
                 WorktreeRemoveResult {
                     workspace_id,

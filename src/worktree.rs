@@ -211,6 +211,32 @@ pub(crate) fn symlink_agent_paths(
     failures
 }
 
+/// Best-effort delete of a worktree's branch after its checkout is removed, so
+/// agent worktrees don't leave orphaned branches behind. Uses `git branch -d`
+/// (safe): git refuses to delete a branch that has unmerged unique commits, is
+/// checked out elsewhere, or is the current branch — so no work is ever lost.
+/// The branch is simply kept when it isn't safely deletable. Failures are
+/// logged and ignored.
+pub(crate) fn try_delete_merged_branch(repo_root: &Path, branch: &str) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["branch", "-d", branch])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            tracing::info!(branch, "deleted merged worktree branch after removal");
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            tracing::info!(branch, reason = %stderr.trim(), "kept worktree branch (has unmerged work or is in use)");
+        }
+        Err(err) => {
+            tracing::warn!(branch, error = %err, "git branch -d could not be launched");
+        }
+    }
+}
+
 pub(crate) fn build_worktree_remove_command(
     repo_root: &Path,
     path: &Path,
@@ -1367,6 +1393,33 @@ prunable stale
         run_git(&repo, &["update-ref", "refs/branch-metadata/feature", &oid]);
 
         assert!(graphite_is_tracked(&repo));
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn try_delete_merged_branch_removes_merged_keeps_unmerged() {
+        let repo = create_committed_repo("delete-merged-branch");
+        // A branch pointing at HEAD has no unique commits -> safely deletable.
+        run_git(&repo, &["branch", "merged-branch"]);
+        assert!(local_branch_exists(&repo, "merged-branch").unwrap());
+        try_delete_merged_branch(&repo, "merged-branch");
+        assert!(
+            !local_branch_exists(&repo, "merged-branch").unwrap(),
+            "a fully-merged branch should be deleted"
+        );
+
+        // A branch with a unique commit is kept (git branch -d refuses it).
+        run_git(&repo, &["checkout", "-q", "-b", "feature"]);
+        run_git(
+            &repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "unique work"],
+        );
+        run_git(&repo, &["checkout", "-q", "-"]); // back off `feature`
+        try_delete_merged_branch(&repo, "feature");
+        assert!(
+            local_branch_exists(&repo, "feature").unwrap(),
+            "a branch with unmerged unique commits should be kept"
+        );
         let _ = std::fs::remove_dir_all(repo);
     }
 
