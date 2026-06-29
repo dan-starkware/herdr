@@ -576,6 +576,14 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
+/// Screen area of a synthesized repo group header row (a group of linked
+/// worktrees whose primary checkout is not open as its own workspace).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceHeaderArea {
+    pub key: String,
+    pub rect: Rect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -731,6 +739,7 @@ pub struct ViewState {
     pub layout: ViewLayout,
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
+    pub workspace_header_areas: Vec<WorkspaceHeaderArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -1793,6 +1802,7 @@ impl AppState {
                 layout: ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                workspace_header_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),

@@ -1124,8 +1124,10 @@ impl AppState {
     pub(crate) fn visible_workspace_order(&self) -> Vec<usize> {
         let order = crate::ui::workspace_list_entries(self)
             .into_iter()
-            .map(|entry| match entry {
-                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => ws_idx,
+            .filter_map(|entry| match entry {
+                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
+                // Synthesized repo headers are not navigable workspaces.
+                crate::ui::WorkspaceListEntry::RepoHeader { .. } => None,
             })
             .collect::<Vec<_>>();
         if order.is_empty() {
