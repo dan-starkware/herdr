@@ -17,33 +17,59 @@ pub(crate) enum BranchChoice {
     Existing(String),
     /// Create a new branch `name` off `base` in the new worktree.
     New { name: String, base: String },
+    /// Graphite repos: create a fresh, auto-named agent branch stacked on
+    /// `base` (the chosen stack row). The agent name supplies the branch name.
+    StackOnto { base: String },
 }
 
 /// Indices into `state.branches` matching the current query (case-insensitive
-/// substring). An empty query matches every branch.
+/// substring on the branch name). An empty query matches every branch.
 pub(crate) fn filtered_branch_indices(state: &BranchChooserState) -> Vec<usize> {
     let query = state.query.trim().to_ascii_lowercase();
     state
         .branches
         .iter()
         .enumerate()
-        .filter(|(_, branch)| query.is_empty() || branch.to_ascii_lowercase().contains(&query))
+        .filter(|(_, row)| query.is_empty() || row.name.to_ascii_lowercase().contains(&query))
         .map(|(idx, _)| idx)
         .collect()
 }
 
-/// Resolve the current branch-chooser state into a [`BranchChoice`]:
-/// - empty query → check out the highlighted existing branch;
-/// - query exactly matches an existing branch → check it out;
+/// The branch name of the currently highlighted row, if any.
+fn highlighted_branch(state: &BranchChooserState) -> Option<&str> {
+    let idx = *filtered_branch_indices(state).get(state.selected)?;
+    Some(state.branches.get(idx)?.name.as_str())
+}
+
+/// Resolve the current branch-chooser state into a [`BranchChoice`].
+///
+/// Plain git repo:
+/// - empty query → check out the highlighted branch;
+/// - query exactly matches a branch → check it out;
 /// - otherwise → create a new branch named by the query, off `default_base`.
+///
+/// Graphite repo (base-picker semantics — the agent always gets a fresh branch):
+/// - empty query → stack a new agent branch onto the highlighted stack row;
+/// - query exactly matches a branch → stack onto that branch;
+/// - otherwise → create the typed branch off `default_base` (the trunk).
 pub(crate) fn resolve_branch_choice(state: &BranchChooserState) -> Option<BranchChoice> {
     let query = state.query.trim();
     if query.is_empty() {
-        let idx = *filtered_branch_indices(state).get(state.selected)?;
-        return Some(BranchChoice::Existing(state.branches.get(idx)?.clone()));
+        let name = highlighted_branch(state)?.to_string();
+        return Some(if state.graphite {
+            BranchChoice::StackOnto { base: name }
+        } else {
+            BranchChoice::Existing(name)
+        });
     }
-    if state.branches.iter().any(|branch| branch == query) {
-        return Some(BranchChoice::Existing(query.to_string()));
+    if state.branches.iter().any(|row| row.name == query) {
+        return Some(if state.graphite {
+            BranchChoice::StackOnto {
+                base: query.to_string(),
+            }
+        } else {
+            BranchChoice::Existing(query.to_string())
+        });
     }
     Some(BranchChoice::New {
         name: query.to_string(),
@@ -124,12 +150,23 @@ fn render_rows(app: &AppState, frame: &mut Frame, body: Rect) {
             base
         };
         let marker = if selected { "▸ " } else { "  " };
-        let label = truncate(branch, body.width.saturating_sub(2) as usize);
-        let line = Line::from(vec![
-            Span::styled(marker, base),
-            Span::styled(label, label_style),
-        ]);
-        frame.render_widget(Paragraph::new(line).style(base), rect);
+        let prefix_cols = branch.graph_prefix.chars().count();
+        let name_budget = (body.width as usize)
+            .saturating_sub(2)
+            .saturating_sub(prefix_cols);
+        let label = truncate(&branch.name, name_budget);
+        let mut spans = vec![Span::styled(marker, base)];
+        if !branch.graph_prefix.is_empty() {
+            // Stack-graph art: dim when unselected, inherit highlight otherwise.
+            let prefix_style = if selected {
+                base
+            } else {
+                Style::default().bg(p.panel_bg).fg(p.overlay0)
+            };
+            spans.push(Span::styled(branch.graph_prefix.clone(), prefix_style));
+        }
+        spans.push(Span::styled(label, label_style));
+        frame.render_widget(Paragraph::new(Line::from(spans)).style(base), rect);
     }
 }
 
@@ -143,6 +180,7 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
     let action = match resolve_branch_choice(&app.branch_chooser) {
         Some(BranchChoice::Existing(name)) => format!(" check out {name}  "),
         Some(BranchChoice::New { name, base }) => format!(" create {name} off {base}  "),
+        Some(BranchChoice::StackOnto { base }) => format!(" stack new agent on {base}  "),
         None => " pick a branch  ".to_string(),
     };
     let line = Line::from(vec![
@@ -176,8 +214,16 @@ mod tests {
 
     fn state(branches: &[&str], query: &str) -> BranchChooserState {
         BranchChooserState {
-            branches: branches.iter().map(|b| b.to_string()).collect(),
+            branches: branches
+                .iter()
+                .map(|b| crate::worktree::BranchRow {
+                    name: b.to_string(),
+                    graph_prefix: String::new(),
+                    is_current: false,
+                })
+                .collect(),
             default_base: "main".into(),
+            graphite: false,
             query: query.into(),
             selected: 0,
             scroll: 0,
@@ -218,6 +264,44 @@ mod tests {
         assert_eq!(
             resolve_branch_choice(&s),
             Some(BranchChoice::Existing("dev".into()))
+        );
+    }
+
+    #[test]
+    fn graphite_repo_stacks_onto_highlighted_row() {
+        let mut s = state(&["main", "feat/a", "feat/b"], "");
+        s.graphite = true;
+        s.selected = 2;
+        assert_eq!(
+            resolve_branch_choice(&s),
+            Some(BranchChoice::StackOnto {
+                base: "feat/b".into()
+            })
+        );
+    }
+
+    #[test]
+    fn graphite_repo_stacks_onto_exact_match() {
+        let mut s = state(&["main", "feat/a"], "feat/a");
+        s.graphite = true;
+        assert_eq!(
+            resolve_branch_choice(&s),
+            Some(BranchChoice::StackOnto {
+                base: "feat/a".into()
+            })
+        );
+    }
+
+    #[test]
+    fn graphite_repo_typed_new_name_creates_off_default_base() {
+        let mut s = state(&["main", "feat/a"], "feat/c");
+        s.graphite = true;
+        assert_eq!(
+            resolve_branch_choice(&s),
+            Some(BranchChoice::New {
+                name: "feat/c".into(),
+                base: "main".into()
+            })
         );
     }
 }

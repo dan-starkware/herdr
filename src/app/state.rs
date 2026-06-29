@@ -868,14 +868,20 @@ pub(crate) struct NewAgentFlow {
 }
 
 /// State for the branch chooser overlay: a fuzzy-filtered list of the chosen
-/// repo's local branches. Picking a match checks it out in a new worktree;
-/// typing a new name creates that branch off `default_base`.
+/// repo's branches. In a plain git repo, picking a match checks it out in a new
+/// worktree and typing a new name creates that branch off `default_base`. In a
+/// Graphite-tracked repo (`graphite`), the list is the stack graph and the
+/// chooser acts as a base picker: the chosen branch becomes the parent of a
+/// fresh agent branch stacked onto it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BranchChooserState {
-    /// All local branch names, before filtering.
-    pub branches: Vec<String>,
+    /// All branch rows, before filtering. Rows carry Graphite stack-graph art
+    /// when the repo is gt-tracked; otherwise just plain names.
+    pub branches: Vec<crate::worktree::BranchRow>,
     /// Default base for a newly typed branch name (e.g. "main").
     pub default_base: String,
+    /// Whether the chosen repo is Graphite-tracked (drives base-picker semantics).
+    pub graphite: bool,
     /// Current fuzzy-search query / new-branch name.
     pub query: String,
     /// Selected index into the currently filtered rows.
@@ -1184,11 +1190,17 @@ impl ContextMenuState {
                 "New agent",
                 "New worktree",
                 "Open worktree...",
+                "Diff vs parent",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: true,
                 ..
-            } => &["Rename", "Close", "Delete worktree checkout..."],
+            } => &[
+                "Rename",
+                "Close",
+                "Delete worktree checkout...",
+                "Diff vs parent",
+            ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
                 has_worktree_children: true,
@@ -1200,6 +1212,7 @@ impl ContextMenuState {
                 "New agent",
                 "New worktree",
                 "Open worktree...",
+                "Diff vs parent",
                 "Expand",
             ],
             ContextMenuKind::GitWorkspace {
@@ -1213,6 +1226,7 @@ impl ContextMenuState {
                 "New agent",
                 "New worktree",
                 "Open worktree...",
+                "Diff vs parent",
                 "Collapse",
             ],
             ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
@@ -1380,6 +1394,10 @@ pub struct AppState {
     /// Set when a UI action asked to create a new agent in its own worktree,
     /// rooted at the repository backing this workspace index.
     pub request_new_agent_worktree: Option<usize>,
+    /// Set when a UI action asked to open a review-diff tab for a workspace:
+    /// `(workspace index, optional base branch override)`. `None` base means
+    /// diff against the branch's Graphite parent / default branch.
+    pub request_review_diff: Option<(usize, Option<String>)>,
     pub request_submit_worktree_create: bool,
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
@@ -1763,6 +1781,7 @@ impl AppState {
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
             request_new_agent_worktree: None,
+            request_review_diff: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -2381,7 +2400,12 @@ mod tests {
 
         assert_eq!(
             menu.items(),
-            &["Rename", "Close", "Delete worktree checkout..."]
+            &[
+                "Rename",
+                "Close",
+                "Delete worktree checkout...",
+                "Diff vs parent"
+            ]
         );
     }
 
@@ -2406,7 +2430,8 @@ mod tests {
                 "Close",
                 "New agent",
                 "New worktree",
-                "Open worktree..."
+                "Open worktree...",
+                "Diff vs parent"
             ]
         );
     }
@@ -2433,6 +2458,7 @@ mod tests {
                 "New agent",
                 "New worktree",
                 "Open worktree...",
+                "Diff vs parent",
                 "Collapse"
             ]
         );
