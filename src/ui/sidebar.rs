@@ -239,6 +239,43 @@ fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
     }
 }
 
+/// Inline agent + status spans appended to a worktree child's branch line.
+fn worktree_agent_spans(
+    primary: &crate::workspace::PaneDetail,
+    badge_state: AgentState,
+    badge_seen: bool,
+    extra: usize,
+    expanded: bool,
+    p: &Palette,
+) -> Vec<Span<'static>> {
+    let (dot, dot_style) = state_dot(badge_state, badge_seen, p);
+    let label = primary
+        .state_labels
+        .get(agent_panel_status_key(primary.state, primary.seen))
+        .map(String::as_str)
+        .unwrap_or_else(|| state_label(primary.state, primary.seen))
+        .to_string();
+    let mut spans = vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(dot, dot_style),
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            label,
+            Style::default().fg(state_label_color(primary.state, primary.seen, p)),
+        ),
+        Span::styled(" ", Style::default()),
+        Span::styled(primary.agent_label.clone(), Style::default().fg(p.overlay1)),
+    ];
+    if extra > 0 {
+        let caret = if expanded { " ▾" } else { " ▸" };
+        spans.push(Span::styled(
+            format!("{caret} +{extra}"),
+            Style::default().fg(p.overlay0),
+        ));
+    }
+    spans
+}
+
 fn space_aggregate_state(app: &AppState, key: &str) -> (AgentState, bool) {
     app.workspaces
         .iter()
@@ -913,6 +950,24 @@ fn render_workspace_list(
                 ws.custom_name.is_some(),
             );
             line1.push(Span::styled(display_label, name_style));
+            let details = ws.pane_details(&app.terminals);
+            if let Some(primary) = ws.primary_pane_detail(&app.terminals) {
+                let (badge_state, badge_seen) = details
+                    .iter()
+                    .max_by_key(|d| workspace_attention_priority(d.state, d.seen))
+                    .map(|d| (d.state, d.seen))
+                    .unwrap_or((primary.state, primary.seen));
+                let extra = details.len().saturating_sub(1);
+                let expanded = app.expanded_worktree_agents.contains(&ws.id);
+                line1.extend(worktree_agent_spans(
+                    &primary,
+                    badge_state,
+                    badge_seen,
+                    extra,
+                    expanded,
+                    p,
+                ));
+            }
         } else {
             line1.push(Span::styled(label, name_style));
         }
@@ -1781,5 +1836,41 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn worktree_agent_spans_includes_label_agent_and_count() {
+        let p = Palette::catppuccin();
+        let detail = crate::workspace::PaneDetail {
+            pane_id: crate::layout::PaneId::alloc(),
+            tab_idx: 0,
+            tab_label: "1".into(),
+            label: "claude".into(),
+            agent_label: "claude".into(),
+            agent: None,
+            state: crate::detect::AgentState::Working,
+            seen: true,
+            last_agent_state_change_seq: None,
+            custom_status: None,
+            state_labels: std::collections::HashMap::new(),
+        };
+        let spans = worktree_agent_spans(
+            &detail,
+            crate::detect::AgentState::Blocked,
+            true,
+            2,
+            false,
+            &p,
+        );
+        let content: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            content.contains("working"),
+            "expected 'working' in: {content}"
+        );
+        assert!(
+            content.contains("claude"),
+            "expected 'claude' in: {content}"
+        );
+        assert!(content.contains("+2"), "expected '+2' in: {content}");
     }
 }
