@@ -590,7 +590,10 @@ pub(crate) fn agent_panel_scrollbar_rect(app: &AppState, area: Rect) -> Option<R
 pub(crate) fn compute_workspace_list_areas(
     app: &AppState,
     area: Rect,
-) -> (Vec<crate::app::state::WorkspaceCardArea>, Vec<()>) {
+) -> (
+    Vec<crate::app::state::WorkspaceCardArea>,
+    Vec<crate::app::state::WorktreeAgentToggleArea>,
+) {
     let ws_area = workspace_list_rect(area, app.sidebar_section_split);
     if ws_area == Rect::default() {
         return (Vec::new(), Vec::new());
@@ -606,7 +609,7 @@ pub(crate) fn compute_workspace_list_areas(
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
     let mut cards = Vec::new();
-    let headers = Vec::new();
+    let mut toggle_areas = Vec::new();
 
     let entries = workspace_list_entries(app);
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
@@ -623,7 +626,19 @@ pub(crate) fn compute_workspace_list_areas(
                 let gap = u16::from(
                     !(*indented && next_entry_is_indented_workspace(&entries, entry_idx)),
                 );
-                if row_y.saturating_add(row_height).saturating_add(gap) > body_bottom {
+                let details_count = if *indented {
+                    ws.pane_details(&app.terminals).len()
+                } else {
+                    0
+                };
+                let expanded = *indented && app.expanded_worktree_agents.contains(&ws.id);
+                let sub_rows = if expanded {
+                    details_count.saturating_sub(1) as u16
+                } else {
+                    0
+                };
+                let total_height = row_height.saturating_add(sub_rows);
+                if row_y.saturating_add(total_height).saturating_add(gap) > body_bottom {
                     break;
                 }
                 cards.push(crate::app::state::WorkspaceCardArea {
@@ -631,12 +646,22 @@ pub(crate) fn compute_workspace_list_areas(
                     rect: Rect::new(body.x, row_y, body.width, row_height),
                     indented: *indented,
                 });
-                row_y = row_y.saturating_add(row_height + gap);
+                // Emit a toggle area (for the caret at the right of the agent spans) when
+                // the indented row has more than one agent pane.
+                if *indented && details_count > 1 {
+                    let caret_width = 6.min(body.width);
+                    let caret_x = body.x + body.width.saturating_sub(caret_width);
+                    toggle_areas.push(crate::app::state::WorktreeAgentToggleArea {
+                        ws_idx: *ws_idx,
+                        rect: Rect::new(caret_x, row_y, caret_width, 1),
+                    });
+                }
+                row_y = row_y.saturating_add(total_height + gap);
             }
         }
     }
 
-    (cards, headers)
+    (cards, toggle_areas)
 }
 
 pub(crate) fn compute_workspace_card_areas(
@@ -1020,6 +1045,41 @@ fn render_workspace_list(
                     Paragraph::new(Line::from(spans)),
                     Rect::new(card.rect.x, row_y + 1, card.rect.width, 1),
                 );
+            }
+        }
+
+        // Render per-agent sub-rows when this indented worktree is expanded.
+        if card.indented && app.expanded_worktree_agents.contains(&ws.id) {
+            let details = ws.pane_details(&app.terminals);
+            if details.len() > 1 {
+                let sub_row_start = row_y + row_height;
+                for (sub_idx, detail) in details.iter().skip(1).enumerate() {
+                    let sub_y = sub_row_start + sub_idx as u16;
+                    if sub_y >= list_bottom {
+                        break;
+                    }
+                    let (dot, dot_style) = state_dot(detail.state, detail.seen, p);
+                    let sub_label = detail
+                        .state_labels
+                        .get(agent_panel_status_key(detail.state, detail.seen))
+                        .map(String::as_str)
+                        .unwrap_or_else(|| state_label(detail.state, detail.seen));
+                    let spans = vec![
+                        Span::styled("      ", Style::default()),
+                        Span::styled(dot, dot_style),
+                        Span::styled(" ", Style::default()),
+                        Span::styled(
+                            sub_label.to_string(),
+                            Style::default().fg(state_label_color(detail.state, detail.seen, p)),
+                        ),
+                        Span::styled(" ", Style::default()),
+                        Span::styled(detail.agent_label.clone(), Style::default().fg(p.overlay1)),
+                    ];
+                    frame.render_widget(
+                        Paragraph::new(Line::from(spans)),
+                        Rect::new(card.rect.x, sub_y, card.rect.width, 1),
+                    );
+                }
             }
         }
     }

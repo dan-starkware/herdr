@@ -576,6 +576,12 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorktreeAgentToggleArea {
+    pub ws_idx: usize,
+    pub rect: Rect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -731,6 +737,7 @@ pub struct ViewState {
     pub layout: ViewLayout,
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
+    pub worktree_agent_toggle_areas: Vec<WorktreeAgentToggleArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -1434,6 +1441,13 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Expand or collapse a worktree's multi-agent sub-rows.
+    pub fn toggle_worktree_agents(&mut self, ws_id: &str) {
+        if !self.expanded_worktree_agents.remove(ws_id) {
+            self.expanded_worktree_agents.insert(ws_id.to_string());
+        }
+    }
+
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
     }
@@ -1673,6 +1687,7 @@ impl AppState {
                 layout: ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                worktree_agent_toggle_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -2263,5 +2278,15 @@ mod tests {
                 "Collapse"
             ]
         );
+    }
+
+    #[test]
+    fn toggle_worktree_agents_flips_membership() {
+        let mut app = AppState::test_new();
+        assert!(!app.expanded_worktree_agents.contains("ws-1"));
+        app.toggle_worktree_agents("ws-1");
+        assert!(app.expanded_worktree_agents.contains("ws-1"));
+        app.toggle_worktree_agents("ws-1");
+        assert!(!app.expanded_worktree_agents.contains("ws-1"));
     }
 }

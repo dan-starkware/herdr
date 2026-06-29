@@ -536,6 +536,21 @@ impl AppState {
                         }
                     }
 
+                    // Toggle area hit-test: check caret on worktree agent rows BEFORE card.
+                    if let Some(toggle) = self.view.worktree_agent_toggle_areas.iter().find(|t| {
+                        mouse.row >= t.rect.y
+                            && mouse.row < t.rect.y + t.rect.height
+                            && mouse.column >= t.rect.x
+                            && mouse.column < t.rect.x + t.rect.width
+                    }) {
+                        let ws_idx = toggle.ws_idx;
+                        if let Some(ws) = self.workspaces.get(ws_idx) {
+                            let ws_id = ws.id.clone();
+                            self.toggle_worktree_agents(&ws_id);
+                        }
+                        return None;
+                    }
+
                     if let Some(idx) = self.workspace_at_row(mouse.row) {
                         self.workspace_press = Some(WorkspacePressState {
                             ws_idx: idx,
