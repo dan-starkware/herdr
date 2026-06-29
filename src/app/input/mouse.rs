@@ -55,6 +55,48 @@ impl AppState {
         }
     }
 
+    /// The context-menu kind for a sidebar workspace row: a git-aware menu when
+    /// the workspace is (or sits under) a git space, otherwise a plain workspace
+    /// menu. Shared by the workspace-list and agent-panel right-click handlers so
+    /// both surfaces present the same menu for a given workspace.
+    fn workspace_context_menu_kind(
+        &self,
+        ws_idx: usize,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+    ) -> ContextMenuKind {
+        self.workspaces
+            .get(ws_idx)
+            .and_then(|ws| {
+                let group_state = crate::ui::workspace_parent_group_state(self, ws_idx);
+                let git_space = ws.git_space().cloned().or_else(|| {
+                    ws.resolved_identity_cwd_from(&self.terminals, terminal_runtimes)
+                        .as_deref()
+                        .and_then(crate::workspace::git_space_metadata)
+                });
+                let is_linked_worktree = ws.worktree_space().map_or_else(
+                    || {
+                        git_space
+                            .as_ref()
+                            .is_some_and(|space| space.is_linked_worktree)
+                    },
+                    |space| space.is_linked_worktree,
+                );
+                let show_git_menu = ws.worktree_space().is_some()
+                    || git_space
+                        .as_ref()
+                        .is_some_and(|space| !space.is_linked_worktree);
+                show_git_menu.then_some(ContextMenuKind::GitWorkspace {
+                    ws_idx,
+                    is_linked_worktree,
+                    has_worktree_children: group_state.is_some(),
+                    collapsed: group_state
+                        .as_ref()
+                        .is_some_and(|(_, collapsed)| *collapsed),
+                })
+            })
+            .unwrap_or(ContextMenuKind::Workspace { ws_idx })
+    }
+
     pub(super) fn handle_mouse(
         &mut self,
         terminal_runtimes: &mut TerminalRuntimeRegistry,
@@ -943,40 +985,17 @@ impl AppState {
                 {
                     return None;
                 }
-                if let Some(idx) = self.workspace_at_row(mouse.row) {
+                // Right-click opens the workspace context menu from either the
+                // workspace list (top section) or an agent-panel row (bottom
+                // section). An agent row maps to its owning workspace so its menu
+                // matches what the spaces section shows for that workspace.
+                let ws_idx = self.workspace_at_row(mouse.row).or_else(|| {
+                    self.agent_detail_target_at(mouse.row)
+                        .map(|(ws_idx, _, _)| ws_idx)
+                });
+                if let Some(idx) = ws_idx {
                     self.selected = idx;
-                    let kind = self
-                        .workspaces
-                        .get(idx)
-                        .and_then(|ws| {
-                            let group_state = crate::ui::workspace_parent_group_state(self, idx);
-                            let git_space = ws.git_space().cloned().or_else(|| {
-                                ws.resolved_identity_cwd_from(&self.terminals, terminal_runtimes)
-                                    .as_deref()
-                                    .and_then(crate::workspace::git_space_metadata)
-                            });
-                            let is_linked_worktree = ws.worktree_space().map_or_else(
-                                || {
-                                    git_space
-                                        .as_ref()
-                                        .is_some_and(|space| space.is_linked_worktree)
-                                },
-                                |space| space.is_linked_worktree,
-                            );
-                            let show_git_menu = ws.worktree_space().is_some()
-                                || git_space
-                                    .as_ref()
-                                    .is_some_and(|space| !space.is_linked_worktree);
-                            show_git_menu.then_some(ContextMenuKind::GitWorkspace {
-                                ws_idx: idx,
-                                is_linked_worktree,
-                                has_worktree_children: group_state.is_some(),
-                                collapsed: group_state
-                                    .as_ref()
-                                    .is_some_and(|(_, collapsed)| *collapsed),
-                            })
-                        })
-                        .unwrap_or(ContextMenuKind::Workspace { ws_idx: idx });
+                    let kind = self.workspace_context_menu_kind(idx, terminal_runtimes);
                     self.context_menu = Some(ContextMenuState {
                         kind,
                         x: mouse.column,

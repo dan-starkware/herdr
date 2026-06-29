@@ -502,7 +502,7 @@ mod tests {
 
     use super::super::{app_for_mouse_test, capture_snapshot, mouse, unique_temp_path};
     use crate::{
-        app::state::{AgentPanelSort, DragTarget, Mode},
+        app::state::{AgentPanelSort, ContextMenuKind, DragTarget, Mode},
         detect::Agent,
         workspace::Workspace,
     };
@@ -839,6 +839,64 @@ mod tests {
             app.state.workspaces[1].tabs[0].layout.focused(),
             second_pane
         );
+    }
+
+    #[test]
+    fn right_clicking_agent_panel_row_opens_context_menu_for_its_workspace() {
+        let mut app = app_for_mouse_test();
+        let first = Workspace::test_new("one");
+        let first_pane = first.tabs[0].root_pane;
+
+        let second = Workspace::test_new("two");
+        let second_pane = second.tabs[0].root_pane;
+
+        app.state.workspaces = vec![first, second];
+        app.state.ensure_test_terminals();
+        let first_terminal_id = app.state.workspaces[0].tabs[0].panes[&first_pane]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&first_terminal_id)
+            .unwrap()
+            .detected_agent = Some(Agent::Pi);
+        let second_terminal_id = app.state.workspaces[1].tabs[0].panes[&second_pane]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&second_terminal_id)
+            .unwrap()
+            .detected_agent = Some(Agent::Claude);
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
+            app.state.view.sidebar_rect,
+            app.state.sidebar_section_split,
+        );
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            detail_area.x + 2,
+            detail_area.y + 6,
+        ));
+
+        assert_eq!(app.state.mode, Mode::ContextMenu);
+        assert_eq!(app.state.selected, 1);
+        let menu = app
+            .state
+            .context_menu
+            .as_ref()
+            .expect("right-click should open a context menu");
+        // The menu targets the agent's owning workspace; whether it is the plain
+        // or git-aware variant depends on git resolution of the test cwd.
+        let menu_ws_idx = match menu.kind {
+            ContextMenuKind::Workspace { ws_idx }
+            | ContextMenuKind::GitWorkspace { ws_idx, .. } => Some(ws_idx),
+            _ => None,
+        };
+        assert_eq!(menu_ws_idx, Some(1));
     }
 
     #[test]
