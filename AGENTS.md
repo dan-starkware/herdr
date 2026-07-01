@@ -90,6 +90,20 @@ just check              # formatting check + cargo nextest + maintenance script 
 
 Run `just check` before committing unless Can explicitly accepts narrower validation. Do not bypass failing checks; fix the failure or explain exactly why a narrower check is enough.
 
+**Build prerequisite — `zig`.** Building compiles the vendored `libghostty-vt`
+through its `build.rs`, which shells out to `zig`. `zig` is **not on the default
+`PATH`**; it lives at `~/.local/zig/<version>/zig` (currently
+`/home/dan/.local/zig/zig-x86_64-linux-0.15.2/zig`). A warm target caches the
+build-script output so you rarely notice — but a **cold build** (most often a
+fresh `git worktree`'s first `cargo build` / `cargo test`/`nextest`) fails with
+`failed to execute zig build for vendored libghostty-vt … No such file or
+directory`. Fix: `build.rs` honors a `ZIG` env var — set it (or add the dir to
+`PATH`) before building in a fresh worktree:
+
+```bash
+export ZIG=$(echo ~/.local/zig/*/zig)   # or the explicit versioned path
+```
+
 Unit tests live next to the code (`#[cfg(test)] mod tests`). New `AppState` or `Workspace` behavior should be testable with `AppState::test_new()` and `Workspace::test_new()` without PTYs.
 
 For broad refactors or release-risk regressions, classify the risk before editing. Treat changes as refactor-risk when they touch two or more core surfaces, persisted state, protocol/API IDs, workspace/tab/pane identity, restore/handoff, agent detection authority, or UI/input state projection. Before moving code, identify the protected behavior and add or name characterization tests. Identity/state refactors should use the test-only invariants `AppState::assert_invariants_for_test()` or `Workspace::assert_invariants_for_test()` with adversarial state from `AppState::test_with_adversarial_identity_state()` or `Workspace::test_adversarial_identity_state()`. Run a roundtable for broad refactors and release-risk regressions, not for routine local fixes.
