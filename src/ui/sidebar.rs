@@ -260,15 +260,16 @@ fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
 }
 
 /// Inline agent + status spans appended to a worktree child's branch line.
+// The worktree row already carries its state dot (from `aggregate_state`), so
+// this inline suffix does NOT repeat it — just the status label (from the
+// primary pane), the agent name, and an expand caret + overflow count when the
+// worktree runs multiple agent panes.
 fn worktree_agent_spans(
     primary: &crate::workspace::PaneDetail,
-    badge_state: AgentState,
-    badge_seen: bool,
     extra: usize,
     expanded: bool,
     p: &Palette,
 ) -> Vec<Span<'static>> {
-    let (dot, dot_style) = state_dot(badge_state, badge_seen, p);
     let label = primary
         .state_labels
         .get(agent_panel_status_key(primary.state, primary.seen))
@@ -277,8 +278,6 @@ fn worktree_agent_spans(
         .to_string();
     let mut spans = vec![
         Span::styled("  ", Style::default()),
-        Span::styled(dot, dot_style),
-        Span::styled(" ", Style::default()),
         Span::styled(
             label,
             Style::default().fg(state_label_color(primary.state, primary.seen, p)),
@@ -1056,21 +1055,9 @@ fn render_workspace_list(
             line1.push(Span::styled(display_label, name_style));
             let details = ws.pane_details(&app.terminals);
             if let Some(primary) = ws.primary_pane_detail(&app.terminals) {
-                let (badge_state, badge_seen) = details
-                    .iter()
-                    .max_by_key(|d| workspace_attention_priority(d.state, d.seen))
-                    .map(|d| (d.state, d.seen))
-                    .unwrap_or((primary.state, primary.seen));
                 let extra = details.len().saturating_sub(1);
                 let expanded = app.expanded_worktree_agents.contains(&ws.id);
-                line1.extend(worktree_agent_spans(
-                    &primary,
-                    badge_state,
-                    badge_seen,
-                    extra,
-                    expanded,
-                    p,
-                ));
+                line1.extend(worktree_agent_spans(&primary, extra, expanded, p));
             }
         } else {
             line1.push(Span::styled(label, name_style));
@@ -2198,14 +2185,7 @@ mod tests {
             custom_status: None,
             state_labels: std::collections::HashMap::new(),
         };
-        let spans = worktree_agent_spans(
-            &detail,
-            crate::detect::AgentState::Blocked,
-            true,
-            2,
-            false,
-            &p,
-        );
+        let spans = worktree_agent_spans(&detail, 2, false, &p);
         let content: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             content.contains("working"),
