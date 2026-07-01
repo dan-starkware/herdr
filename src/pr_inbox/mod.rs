@@ -81,6 +81,21 @@ pub fn parse_gh_search_prs(stdout: &str) -> Result<Vec<PullRequestSummary>, serd
 
 /// Run `gh` to fetch the open PRs the user is involved in. Maps every failure
 /// mode onto a status the UI can render; never panics, never returns an error.
+/// Classify a failed `gh` invocation's stderr into an inbox status.
+///
+/// Auth-related failures map to `GhNotAuthed`; anything else is a generic
+/// `Error` carrying the trimmed stderr.
+fn classify_gh_failure(stderr: &str) -> PullRequestInboxStatus {
+    let lower = stderr.to_ascii_lowercase();
+    if lower.contains("auth") || lower.contains("logged in") || lower.contains("gh auth login") {
+        PullRequestInboxStatus::GhNotAuthed
+    } else {
+        PullRequestInboxStatus::Error {
+            message: stderr.trim().to_string(),
+        }
+    }
+}
+
 pub fn fetch_pr_inbox() -> PullRequestInbox {
     use std::process::Command;
     let output = match Command::new("gh")
@@ -114,20 +129,9 @@ pub fn fetch_pr_inbox() -> PullRequestInbox {
     };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let lower = stderr.to_ascii_lowercase();
-        let status = if lower.contains("auth")
-            || lower.contains("logged in")
-            || lower.contains("gh auth login")
-        {
-            PullRequestInboxStatus::GhNotAuthed
-        } else {
-            PullRequestInboxStatus::Error {
-                message: stderr.trim().to_string(),
-            }
-        };
         return PullRequestInbox {
             prs: Vec::new(),
-            status,
+            status: classify_gh_failure(&stderr),
         };
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -169,5 +173,27 @@ mod tests {
     fn parses_empty_list() {
         let prs = parse_gh_search_prs("[]").expect("should parse empty");
         assert!(prs.is_empty());
+    }
+
+    #[test]
+    fn classify_gh_failure_detects_auth() {
+        assert_eq!(
+            classify_gh_failure("To get started with GitHub CLI, please run: gh auth login"),
+            PullRequestInboxStatus::GhNotAuthed
+        );
+        assert_eq!(
+            classify_gh_failure("You are not logged in to any GitHub hosts."),
+            PullRequestInboxStatus::GhNotAuthed
+        );
+    }
+
+    #[test]
+    fn classify_gh_failure_generic_error() {
+        assert_eq!(
+            classify_gh_failure("  some unexpected failure\n"),
+            PullRequestInboxStatus::Error {
+                message: "some unexpected failure".to_string(),
+            }
+        );
     }
 }
