@@ -500,7 +500,7 @@ mod pr_inbox_event_tests {
         };
         let json = serde_json::to_string(&env).expect("serializes");
         let back: EventEnvelope = serde_json::from_str(&json).expect("round trips");
-        assert_eq!(back.event, EventKind::PrInboxRefreshed);
+        assert_eq!(back, env);
         assert_eq!(EventKind::PrInboxRefreshed.dot_name(), "pr_inbox.refreshed");
     }
 }

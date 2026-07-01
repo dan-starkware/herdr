@@ -3829,6 +3829,9 @@ mod tests {
         app.session_save_deadline = Some(now + Duration::from_secs(2));
         app.next_resize_poll = now + Duration::from_secs(5);
         app.next_auto_update_check = Some(now + Duration::from_secs(6));
+        // Keep the pr-inbox refresh timer past the session-save deadline so it
+        // does not dominate; this test only asserts session-save participates.
+        app.last_pr_inbox_refresh = now + Duration::from_secs(10);
 
         assert_eq!(
             app.next_loop_deadline(now, false),
@@ -3843,9 +3846,12 @@ mod tests {
         app.next_resize_poll = now + Duration::from_millis(100);
         app.session_save_deadline = Some(now + Duration::from_secs(2));
         app.next_auto_update_check = Some(now + Duration::from_secs(6));
+        // Suppress git-refresh and pr-inbox timers so only the session-save
+        // deadline remains; this test only asserts the resize poll is ignored.
+        app.state.workspaces.clear();
 
         assert_eq!(
-            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
+            app.next_headless_loop_deadline_with_git_refresh(now, false, false),
             app.session_save_deadline
         );
     }
@@ -3861,11 +3867,11 @@ mod tests {
         app.next_auto_update_check = None;
         app.session_save_deadline = None;
         app.state.workspaces.clear();
-        // Suppress the pr-inbox deadline so it does not contribute a future instant.
-        app.pr_inbox_refresh_in_flight = true;
 
+        // include_git_refresh=false is the no-app-client path: it suppresses
+        // both the git-refresh and pr-inbox deadlines the real way.
         assert_eq!(
-            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
+            app.next_headless_loop_deadline_with_git_refresh(now, false, false),
             None
         );
     }
@@ -3888,6 +3894,9 @@ mod tests {
         app.selection_autoscroll_deadline = Some(now + Duration::from_millis(5));
         app.next_animation_tick = Some(now + Duration::from_millis(100));
         app.session_save_deadline = Some(now + Duration::from_millis(200));
+        // Keep the pr-inbox refresh timer past the autoscroll deadline so it
+        // does not dominate this assertion.
+        app.last_pr_inbox_refresh = now + Duration::from_secs(10);
         assert_eq!(
             app.next_loop_deadline(now, false),
             app.selection_autoscroll_deadline
