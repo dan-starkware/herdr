@@ -88,3 +88,12 @@ onto `master`:
 - **Cross-highlight a PR against its local worktree.** If a PR's head branch
   matches an open worktree's branch, highlight across the two sidebar sections
   (deferred from the original PR-inbox spec).
+
+- **Show git diff-stats on the primary / standalone workspace row, not just
+  linked worktrees.** The `+/- · ~/-` diff-stats sub-line (`worktree_stats_spans`,
+  fed by `cached_git_diff_stats`) is currently populated and rendered only for
+  *linked* worktrees. A repo's main working tree — shown as a standalone
+  top-level row (no linked worktrees) or as the repo header (primary open
+  alongside worktrees) — shows its branch but no committed-vs-base / WIP stat
+  line. For the intended "every row shows its git data" sidebar, compute and
+  render diff-stats for the primary/standalone workspace too.
