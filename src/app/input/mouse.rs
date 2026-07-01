@@ -578,6 +578,21 @@ impl AppState {
                         }
                     }
 
+                    // Toggle area hit-test: check caret on worktree agent rows BEFORE card.
+                    if let Some(toggle) = self.view.worktree_agent_toggle_areas.iter().find(|t| {
+                        mouse.row >= t.rect.y
+                            && mouse.row < t.rect.y + t.rect.height
+                            && mouse.column >= t.rect.x
+                            && mouse.column < t.rect.x + t.rect.width
+                    }) {
+                        let ws_idx = toggle.ws_idx;
+                        if let Some(ws) = self.workspaces.get(ws_idx) {
+                            let ws_id = ws.id.clone();
+                            self.toggle_worktree_agents(&ws_id);
+                        }
+                        return None;
+                    }
+
                     // Synthesized repo headers (no open primary checkout) have no
                     // workspace to select, so a click anywhere on the row toggles
                     // the worktree group's collapse, matching the rendered caret.

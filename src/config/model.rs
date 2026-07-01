@@ -328,6 +328,8 @@ pub struct KeysConfig {
     pub detach: BindingConfig,
     /// Reload config.toml in the running app/server. Default: "prefix+shift+r".
     pub reload_config: BindingConfig,
+    /// Trigger an immediate PR inbox refresh. Unset by default.
+    pub refresh_pr_inbox: BindingConfig,
     /// Focus the currently visible notification target. Default: "prefix+o".
     pub open_notification_target: BindingConfig,
     /// Open the repository chooser to open a repo as a workspace. Default: "prefix+shift+o".
@@ -941,6 +943,7 @@ impl Default for KeysConfig {
             navigate_pane_right: BindingConfig::one("l"),
             detach: BindingConfig::one("prefix+q"),
             reload_config: BindingConfig::one("prefix+shift+r"),
+            refresh_pr_inbox: BindingConfig::empty(),
             open_notification_target: BindingConfig::one("prefix+o"),
             open_repo_chooser: BindingConfig::one("prefix+shift+o"),
             new_agent: BindingConfig::one("prefix+a"),

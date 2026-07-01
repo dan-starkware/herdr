@@ -584,6 +584,12 @@ pub struct WorkspaceHeaderArea {
     pub rect: Rect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorktreeAgentToggleArea {
+    pub ws_idx: usize,
+    pub rect: Rect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -740,6 +746,7 @@ pub struct ViewState {
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
     pub workspace_header_areas: Vec<WorkspaceHeaderArea>,
+    pub worktree_agent_toggle_areas: Vec<WorktreeAgentToggleArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -1442,6 +1449,7 @@ pub struct AppState {
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
     pub request_reload_config: bool,
+    pub request_pr_inbox_refresh: bool,
     /// Set when the headless server should ask attached clients to reload
     /// their client-local sound config from disk.
     pub request_client_config_reload: bool,
@@ -1484,6 +1492,7 @@ pub struct AppState {
     pub copy_mode: Option<CopyModeState>,
     pub workspace_scroll: usize,
     pub agent_panel_scroll: usize,
+    pub expanded_worktree_agents: std::collections::HashSet<String>,
     pub tab_scroll: usize,
     pub tab_scroll_follow_active: bool,
     pub mobile_switcher_scroll: usize,
@@ -1599,9 +1608,20 @@ pub struct AppState {
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
+    /// Most recent personal PR inbox snapshot.
+    pub pr_inbox: crate::pr_inbox::PullRequestInbox,
+    /// Scroll offset for the PR inbox display.
+    pub pr_inbox_scroll: usize,
 }
 
 impl AppState {
+    /// Expand or collapse a worktree's multi-agent sub-rows.
+    pub fn toggle_worktree_agents(&mut self, ws_id: &str) {
+        if !self.expanded_worktree_agents.remove(ws_id) {
+            self.expanded_worktree_agents.insert(ws_id.to_string());
+        }
+    }
+
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
     }
@@ -1829,6 +1849,7 @@ impl AppState {
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
             request_reload_config: false,
+            request_pr_inbox_refresh: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
@@ -1857,6 +1878,7 @@ impl AppState {
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
+            expanded_worktree_agents: std::collections::HashSet::new(),
             tab_scroll: 0,
             tab_scroll_follow_active: true,
             mobile_switcher_scroll: 0,
@@ -1865,6 +1887,7 @@ impl AppState {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 workspace_header_areas: Vec::new(),
+                worktree_agent_toggle_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -1967,6 +1990,8 @@ impl AppState {
             host_terminal_theme: TerminalTheme::default(),
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
+            pr_inbox: crate::pr_inbox::PullRequestInbox::default(),
+            pr_inbox_scroll: 0,
         }
     }
 
@@ -2508,5 +2533,15 @@ mod tests {
                 "Collapse"
             ]
         );
+    }
+
+    #[test]
+    fn toggle_worktree_agents_flips_membership() {
+        let mut app = AppState::test_new();
+        assert!(!app.expanded_worktree_agents.contains("ws-1"));
+        app.toggle_worktree_agents("ws-1");
+        assert!(app.expanded_worktree_agents.contains("ws-1"));
+        app.toggle_worktree_agents("ws-1");
+        assert!(!app.expanded_worktree_agents.contains("ws-1"));
     }
 }

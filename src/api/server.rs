@@ -347,6 +347,8 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PluginPaneOpen(_) => "plugin.pane.open",
         Method::PluginPaneFocus(_) => "plugin.pane.focus",
         Method::PluginPaneClose(_) => "plugin.pane.close",
+        Method::PrInboxList(_) => "pr_inbox.list",
+        Method::PrInboxRefresh(_) => "pr_inbox.refresh",
     }
 }
 

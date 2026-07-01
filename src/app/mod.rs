@@ -34,6 +34,7 @@ pub(crate) const HEADLESS_ANIMATION_TICK_STEP: u32 = 8;
 pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
+pub(crate) const PR_INBOX_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
@@ -108,6 +109,9 @@ pub struct App {
     pub(crate) last_git_remote_status_refresh: Instant,
     pub(crate) git_refresh_in_flight: bool,
     pub(crate) git_refresh_due_after_in_flight: bool,
+    pub(crate) last_pr_inbox_refresh: Instant,
+    pub(crate) pr_inbox_refresh_in_flight: bool,
+    pub(crate) pr_inbox_refresh_due_after_in_flight: bool,
     pub(crate) git_status_cache: HashMap<std::path::PathBuf, crate::workspace::GitStatusCacheEntry>,
     pub(crate) pending_api_worktree_creates: HashMap<std::path::PathBuf, u64>,
     pub(crate) pending_api_worktree_removes: HashMap<String, u64>,
@@ -522,6 +526,7 @@ impl App {
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
             request_reload_config: false,
+            request_pr_inbox_refresh: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
             creating_new_tab: false,
@@ -559,6 +564,7 @@ impl App {
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
+            expanded_worktree_agents: std::collections::HashSet::new(),
             tab_scroll: 0,
             tab_scroll_follow_active: true,
             mobile_switcher_scroll: 0,
@@ -567,6 +573,7 @@ impl App {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 workspace_header_areas: Vec::new(),
+                worktree_agent_toggle_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -660,6 +667,8 @@ impl App {
             host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
+            pr_inbox: crate::pr_inbox::PullRequestInbox::default(),
+            pr_inbox_scroll: 0,
         };
 
         state.terminals = restored_terminals;
@@ -708,6 +717,9 @@ impl App {
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
             git_refresh_in_flight: false,
             git_refresh_due_after_in_flight: false,
+            last_pr_inbox_refresh: Instant::now() - PR_INBOX_REFRESH_INTERVAL,
+            pr_inbox_refresh_in_flight: false,
+            pr_inbox_refresh_due_after_in_flight: false,
             git_status_cache: HashMap::new(),
             pending_api_worktree_creates: HashMap::new(),
             pending_api_worktree_removes: HashMap::new(),
@@ -3994,6 +4006,9 @@ mod tests {
         app.session_save_deadline = Some(now + Duration::from_secs(2));
         app.next_resize_poll = now + Duration::from_secs(5);
         app.next_auto_update_check = Some(now + Duration::from_secs(6));
+        // Keep the pr-inbox refresh timer past the session-save deadline so it
+        // does not dominate; this test only asserts session-save participates.
+        app.last_pr_inbox_refresh = now + Duration::from_secs(10);
 
         assert_eq!(
             app.next_loop_deadline(now, false),
@@ -4008,9 +4023,12 @@ mod tests {
         app.next_resize_poll = now + Duration::from_millis(100);
         app.session_save_deadline = Some(now + Duration::from_secs(2));
         app.next_auto_update_check = Some(now + Duration::from_secs(6));
+        // Suppress git-refresh and pr-inbox timers so only the session-save
+        // deadline remains; this test only asserts the resize poll is ignored.
+        app.state.workspaces.clear();
 
         assert_eq!(
-            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
+            app.next_headless_loop_deadline_with_git_refresh(now, false, false),
             app.session_save_deadline
         );
     }
@@ -4027,8 +4045,10 @@ mod tests {
         app.session_save_deadline = None;
         app.state.workspaces.clear();
 
+        // include_git_refresh=false is the no-app-client path: it suppresses
+        // both the git-refresh and pr-inbox deadlines the real way.
         assert_eq!(
-            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
+            app.next_headless_loop_deadline_with_git_refresh(now, false, false),
             None
         );
     }
@@ -4051,6 +4071,9 @@ mod tests {
         app.selection_autoscroll_deadline = Some(now + Duration::from_millis(5));
         app.next_animation_tick = Some(now + Duration::from_millis(100));
         app.session_save_deadline = Some(now + Duration::from_millis(200));
+        // Keep the pr-inbox refresh timer past the autoscroll deadline so it
+        // does not dominate this assertion.
+        app.last_pr_inbox_refresh = now + Duration::from_secs(10);
         assert_eq!(
             app.next_loop_deadline(now, false),
             app.selection_autoscroll_deadline

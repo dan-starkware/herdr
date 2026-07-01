@@ -217,11 +217,12 @@ fn compute_view_internal(
         app.agent_panel_scroll = 0;
     }
 
-    let (workspace_card_areas, workspace_header_areas) = if app.sidebar_collapsed {
-        (Vec::new(), Vec::new())
-    } else {
-        compute_workspace_list_areas(app, sidebar_area)
-    };
+    let (workspace_card_areas, workspace_header_areas, worktree_agent_toggle_areas) =
+        if app.sidebar_collapsed {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else {
+            compute_workspace_list_areas(app, sidebar_area)
+        };
 
     let tab_bar_view = app
         .active
@@ -284,6 +285,7 @@ fn compute_view_internal(
         sidebar_rect: sidebar_area,
         workspace_card_areas,
         workspace_header_areas,
+        worktree_agent_toggle_areas,
         tab_bar_rect,
         tab_hit_areas: tab_bar_view.tab_hit_areas,
         tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
@@ -360,6 +362,7 @@ fn compute_mobile_view(
         sidebar_rect: Rect::default(),
         workspace_card_areas: Vec::new(),
         workspace_header_areas: Vec::new(),
+        worktree_agent_toggle_areas: Vec::new(),
         tab_bar_rect: Rect::default(),
         tab_hit_areas: Vec::new(),
         tab_scroll_left_hit_area: Rect::default(),

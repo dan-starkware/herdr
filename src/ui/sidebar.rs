@@ -186,50 +186,6 @@ fn truncate_text(text: &str, max_width: usize) -> String {
     format!("{prefix}…")
 }
 
-fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -> String {
-    let Some(tab_label) = entry.primary_tab_label.as_deref() else {
-        return truncate_text(&entry.primary_label, max_width);
-    };
-
-    let separator = " · ";
-    let separator_width = separator.chars().count();
-    if max_width <= separator_width + 2 {
-        return truncate_text(
-            &format!("{}{}{}", entry.primary_label, separator, tab_label),
-            max_width,
-        );
-    }
-
-    let available = max_width.saturating_sub(separator_width);
-    let min_tab = 4.min(available.saturating_sub(1)).max(1);
-    let preferred_workspace = ((available * 2) / 3).max(1);
-    let mut workspace_budget = preferred_workspace
-        .min(available.saturating_sub(min_tab))
-        .max(1);
-    let mut tab_budget = available.saturating_sub(workspace_budget);
-
-    let workspace_len = entry.primary_label.chars().count();
-    let tab_len = tab_label.chars().count();
-
-    if workspace_len < workspace_budget {
-        let spare = workspace_budget - workspace_len;
-        workspace_budget = workspace_len;
-        tab_budget = (tab_budget + spare).min(available.saturating_sub(workspace_budget));
-    }
-    if tab_len < tab_budget {
-        let spare = tab_budget - tab_len;
-        tab_budget = tab_len;
-        workspace_budget = (workspace_budget + spare).min(available.saturating_sub(tab_budget));
-    }
-
-    format!(
-        "{}{}{}",
-        truncate_text(&entry.primary_label, workspace_budget),
-        separator,
-        truncate_text(tab_label, tab_budget)
-    )
-}
-
 fn workspace_row_height(ws: &crate::workspace::Workspace) -> u16 {
     if ws.branch().is_some() {
         2
@@ -301,6 +257,43 @@ fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
         (AgentState::Idle, true) => 1,
         (AgentState::Unknown, _) => 0,
     }
+}
+
+/// Inline agent + status spans appended to a worktree child's branch line.
+fn worktree_agent_spans(
+    primary: &crate::workspace::PaneDetail,
+    badge_state: AgentState,
+    badge_seen: bool,
+    extra: usize,
+    expanded: bool,
+    p: &Palette,
+) -> Vec<Span<'static>> {
+    let (dot, dot_style) = state_dot(badge_state, badge_seen, p);
+    let label = primary
+        .state_labels
+        .get(agent_panel_status_key(primary.state, primary.seen))
+        .map(String::as_str)
+        .unwrap_or_else(|| state_label(primary.state, primary.seen))
+        .to_string();
+    let mut spans = vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(dot, dot_style),
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            label,
+            Style::default().fg(state_label_color(primary.state, primary.seen, p)),
+        ),
+        Span::styled(" ", Style::default()),
+        Span::styled(primary.agent_label.clone(), Style::default().fg(p.overlay1)),
+    ];
+    if extra > 0 {
+        let caret = if expanded { " ▾" } else { " ▸" };
+        spans.push(Span::styled(
+            format!("{caret} +{extra}"),
+            Style::default().fg(p.overlay0),
+        ));
+    }
+    spans
 }
 
 fn space_aggregate_state(app: &AppState, key: &str) -> (AgentState, bool) {
@@ -646,16 +639,17 @@ pub(crate) fn compute_workspace_list_areas(
 ) -> (
     Vec<crate::app::state::WorkspaceCardArea>,
     Vec<crate::app::state::WorkspaceHeaderArea>,
+    Vec<crate::app::state::WorktreeAgentToggleArea>,
 ) {
     let ws_area = workspace_list_rect(area, app.sidebar_section_split);
     if ws_area == Rect::default() {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
 
     let metrics = workspace_list_scroll_metrics(app, ws_area);
     let body = workspace_list_body_rect(ws_area, should_show_scrollbar(metrics));
     if body.width == 0 || body.height == 0 {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
 
     let scroll = app.workspace_scroll;
@@ -663,6 +657,7 @@ pub(crate) fn compute_workspace_list_areas(
     let body_bottom = body.y + body.height;
     let mut cards = Vec::new();
     let mut headers = Vec::new();
+    let mut toggle_areas = Vec::new();
 
     let entries = workspace_list_entries(app);
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
@@ -679,7 +674,19 @@ pub(crate) fn compute_workspace_list_areas(
                 let gap = u16::from(
                     !(*indented && next_entry_is_indented_workspace(&entries, entry_idx)),
                 );
-                if row_y.saturating_add(row_height).saturating_add(gap) > body_bottom {
+                let details_count = if *indented {
+                    ws.pane_details(&app.terminals).len()
+                } else {
+                    0
+                };
+                let expanded = *indented && app.expanded_worktree_agents.contains(&ws.id);
+                let sub_rows = if expanded {
+                    details_count.saturating_sub(1) as u16
+                } else {
+                    0
+                };
+                let total_height = row_height.saturating_add(sub_rows);
+                if row_y.saturating_add(total_height).saturating_add(gap) > body_bottom {
                     break;
                 }
                 cards.push(crate::app::state::WorkspaceCardArea {
@@ -687,7 +694,17 @@ pub(crate) fn compute_workspace_list_areas(
                     rect: Rect::new(body.x, row_y, body.width, row_height),
                     indented: *indented,
                 });
-                row_y = row_y.saturating_add(row_height + gap);
+                // Emit a toggle area (for the caret at the right of the agent spans) when
+                // the indented row has more than one agent pane.
+                if *indented && details_count > 1 {
+                    let caret_width = 6.min(body.width);
+                    let caret_x = body.x + body.width.saturating_sub(caret_width);
+                    toggle_areas.push(crate::app::state::WorktreeAgentToggleArea {
+                        ws_idx: *ws_idx,
+                        rect: Rect::new(caret_x, row_y, caret_width, 1),
+                    });
+                }
+                row_y = row_y.saturating_add(total_height.saturating_add(gap));
             }
             WorkspaceListEntry::RepoHeader { key } => {
                 let row_height = REPO_HEADER_ROW_HEIGHT;
@@ -704,7 +721,7 @@ pub(crate) fn compute_workspace_list_areas(
         }
     }
 
-    (cards, headers)
+    (cards, headers, toggle_areas)
 }
 
 pub(crate) fn compute_workspace_card_areas(
@@ -906,7 +923,7 @@ pub(super) fn render_sidebar(
     let (ws_area, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
 
     render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
-    render_agent_detail(app, terminal_runtimes, frame, detail_area);
+    render_pr_inbox(app, frame, detail_area);
     render_sidebar_toggle(app, frame, area, false, p);
 }
 
@@ -1037,6 +1054,24 @@ fn render_workspace_list(
                 ws.custom_name.is_some(),
             );
             line1.push(Span::styled(display_label, name_style));
+            let details = ws.pane_details(&app.terminals);
+            if let Some(primary) = ws.primary_pane_detail(&app.terminals) {
+                let (badge_state, badge_seen) = details
+                    .iter()
+                    .max_by_key(|d| workspace_attention_priority(d.state, d.seen))
+                    .map(|d| (d.state, d.seen))
+                    .unwrap_or((primary.state, primary.seen));
+                let extra = details.len().saturating_sub(1);
+                let expanded = app.expanded_worktree_agents.contains(&ws.id);
+                line1.extend(worktree_agent_spans(
+                    &primary,
+                    badge_state,
+                    badge_seen,
+                    extra,
+                    expanded,
+                    p,
+                ));
+            }
         } else {
             line1.push(Span::styled(label, name_style));
         }
@@ -1098,6 +1133,41 @@ fn render_workspace_list(
                     Paragraph::new(Line::from(spans)),
                     Rect::new(card.rect.x, row_y + 1, card.rect.width, 1),
                 );
+            }
+        }
+
+        // Render per-agent sub-rows when this indented worktree is expanded.
+        if card.indented && app.expanded_worktree_agents.contains(&ws.id) {
+            let details = ws.pane_details(&app.terminals);
+            if details.len() > 1 {
+                let sub_row_start = row_y + row_height;
+                for (sub_idx, detail) in details.iter().skip(1).enumerate() {
+                    let sub_y = sub_row_start + sub_idx as u16;
+                    if sub_y >= list_bottom {
+                        break;
+                    }
+                    let (dot, dot_style) = state_dot(detail.state, detail.seen, p);
+                    let sub_label = detail
+                        .state_labels
+                        .get(agent_panel_status_key(detail.state, detail.seen))
+                        .map(String::as_str)
+                        .unwrap_or_else(|| state_label(detail.state, detail.seen));
+                    let spans = vec![
+                        Span::styled("      ", Style::default()),
+                        Span::styled(dot, dot_style),
+                        Span::styled(" ", Style::default()),
+                        Span::styled(
+                            sub_label.to_string(),
+                            Style::default().fg(state_label_color(detail.state, detail.seen, p)),
+                        ),
+                        Span::styled(" ", Style::default()),
+                        Span::styled(detail.agent_label.clone(), Style::default().fg(p.overlay1)),
+                    ];
+                    frame.render_widget(
+                        Paragraph::new(Line::from(spans)),
+                        Rect::new(card.rect.x, sub_y, card.rect.width, 1),
+                    );
+                }
             }
         }
     }
@@ -1178,119 +1248,181 @@ fn render_workspace_list(
     }
 }
 
-fn render_agent_detail(
-    app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
-    frame: &mut Frame,
-    area: Rect,
-) {
+const PR_INBOX_HEADER_ROWS: u16 = 3;
+
+fn pr_inbox_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
+    if area.width == 0 || area.height <= PR_INBOX_HEADER_ROWS {
+        return Rect::default();
+    }
+    let body_y = area.y.saturating_add(PR_INBOX_HEADER_ROWS);
+    let body_height = (area.y + area.height).saturating_sub(body_y);
+    let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
+    Rect::new(area.x, body_y, body_width, body_height)
+}
+
+/// Rows consumed per PR entry (name line + repo line + gap).
+const PR_ROW_HEIGHT: u16 = 3;
+
+fn pr_inbox_visible_count(area: Rect) -> usize {
+    let body = pr_inbox_body_rect(area, false);
+    if body.height == 0 {
+        return 0;
+    }
+    (body.height / PR_ROW_HEIGHT) as usize
+}
+
+pub(crate) fn pr_inbox_scroll_metrics(app: &AppState, area: Rect) -> crate::pane::ScrollMetrics {
+    let viewport_rows = pr_inbox_visible_count(area);
+    let total_rows = app.pr_inbox.prs.len();
+    let max_offset_from_bottom = total_rows.saturating_sub(viewport_rows);
+    let offset_from_bottom = total_rows
+        .saturating_sub(app.pr_inbox_scroll)
+        .saturating_sub(viewport_rows);
+    crate::pane::ScrollMetrics {
+        offset_from_bottom,
+        max_offset_from_bottom,
+        viewport_rows,
+    }
+}
+
+pub(crate) fn pr_inbox_scrollbar_rect(app: &AppState, area: Rect) -> Option<Rect> {
+    let metrics = pr_inbox_scroll_metrics(app, area);
+    let body = pr_inbox_body_rect(area, true);
+    (should_show_scrollbar(metrics) && body.width > 0 && body.height > 0).then_some(Rect::new(
+        area.x + area.width.saturating_sub(1),
+        body.y,
+        1,
+        body.height,
+    ))
+}
+
+fn render_pr_inbox(app: &AppState, frame: &mut Frame, area: Rect) {
     let p = &app.palette;
 
     if area.height < 3 {
         return;
     }
 
+    // Separator line.
     let sep_line = "─".repeat(area.width as usize);
     frame.render_widget(
         Paragraph::new(Span::styled(&sep_line, Style::default().fg(p.surface_dim))),
         Rect::new(area.x, area.y, area.width, 1),
     );
 
+    // Section header.
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            " agents",
+            " prs",
             Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
         )])),
         Rect::new(area.x, area.y + 1, area.width, 1),
     );
-    let toggle_rect = agent_panel_toggle_rect(area, app.agent_panel_sort);
-    if toggle_rect != Rect::default() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                agent_panel_sort_label(app.agent_panel_sort),
-                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
-            ))
-            .alignment(Alignment::Right),
-            toggle_rect,
-        );
-    }
 
-    let details = agent_panel_entries_from(app, terminal_runtimes);
-    let metrics = agent_panel_scroll_metrics(app, area);
-    let scrollbar_rect = agent_panel_scrollbar_rect(app, area);
-    let body = agent_panel_body_rect(area, should_show_scrollbar(metrics));
+    let body = pr_inbox_body_rect(
+        area,
+        should_show_scrollbar(pr_inbox_scroll_metrics(app, area)),
+    );
     if body == Rect::default() {
         return;
     }
 
+    use crate::pr_inbox::PullRequestInboxStatus;
+    match &app.pr_inbox.status {
+        PullRequestInboxStatus::Loading => {
+            frame.render_widget(
+                Paragraph::new(Span::styled(" loading…", Style::default().fg(p.overlay0))),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
+            return;
+        }
+        PullRequestInboxStatus::GhNotInstalled => {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    " gh not installed",
+                    Style::default().fg(p.overlay0),
+                )),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
+            return;
+        }
+        PullRequestInboxStatus::GhNotAuthed => {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    " gh auth login",
+                    Style::default().fg(p.overlay0),
+                )),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
+            return;
+        }
+        PullRequestInboxStatus::Error { .. } => {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    " error fetching prs",
+                    Style::default().fg(p.red),
+                )),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
+            return;
+        }
+        PullRequestInboxStatus::Ok => {}
+    }
+
+    if app.pr_inbox.prs.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " no open prs",
+                Style::default().fg(p.overlay0),
+            )),
+            Rect::new(body.x, body.y, body.width, 1),
+        );
+        return;
+    }
+
+    let metrics = pr_inbox_scroll_metrics(app, area);
+    let scrollbar_rect = pr_inbox_scrollbar_rect(app, area);
+
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
-    for detail in details.iter().skip(app.agent_panel_scroll) {
-        if row_y.saturating_add(1) >= body_bottom {
+    for pr in app.pr_inbox.prs.iter().skip(app.pr_inbox_scroll) {
+        if row_y.saturating_add(2) > body_bottom {
             break;
         }
 
-        // Check if this agent entry corresponds to the active session
-        let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
+        // Title line: [draft] prefix + title.
+        let indent = " ";
+        let draft_prefix = if pr.is_draft { "[draft] " } else { "" };
+        let draft_reserved = draft_prefix.chars().count() + indent.chars().count();
+        let max_title = (body.width as usize).saturating_sub(draft_reserved);
+        let title_display = truncate_text(&pr.title, max_title);
 
-        let (icon, icon_style) = agent_icon(detail.state, detail.seen, app.spinner_tick, p);
-        let label_color = state_label_color(detail.state, detail.seen, p);
-        let label = detail
-            .state_labels
-            .get(agent_panel_status_key(detail.state, detail.seen))
-            .map(String::as_str)
-            .unwrap_or_else(|| state_label(detail.state, detail.seen));
-
-        let row_style = if is_active {
-            Style::default().bg(p.surface_dim)
-        } else {
-            Style::default()
-        };
-
-        let name_style = if is_active {
-            Style::default().fg(p.text).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
-        };
-        let status_style = if is_active {
-            Style::default().fg(label_color)
-        } else {
-            Style::default().fg(label_color).add_modifier(Modifier::DIM)
-        };
-        let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
-
-        let primary_label =
-            format_agent_panel_primary_label(detail, body.width.saturating_sub(3) as usize);
-        let name_line = Line::from(vec![
-            Span::styled(" ", Style::default()),
-            Span::styled(icon, icon_style),
-            Span::styled(" ", Style::default()),
-            Span::styled(primary_label, name_style),
-        ]);
+        let mut title_spans = vec![Span::styled(indent, Style::default())];
+        if pr.is_draft {
+            title_spans.push(Span::styled("[draft] ", Style::default().fg(p.overlay0)));
+        }
+        title_spans.push(Span::styled(
+            title_display,
+            Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD),
+        ));
         frame.render_widget(
-            Paragraph::new(name_line).style(row_style),
+            Paragraph::new(Line::from(title_spans)),
             Rect::new(body.x, row_y, body.width, 1),
         );
         row_y += 1;
 
-        let mut status_spans = vec![
-            Span::styled("   ", Style::default()),
-            Span::styled(label, status_style),
-        ];
-        if let Some(agent_label) = &detail.agent_label {
-            status_spans.push(Span::styled(" · ", agent_style));
-            status_spans.push(Span::styled(agent_label, agent_style));
+        // Repo + PR number line.
+        if row_y < body_bottom {
+            let repo_label = format!("   #{} {}", pr.number, pr.repo);
+            let repo_display = truncate_text(&repo_label, body.width as usize);
+            frame.render_widget(
+                Paragraph::new(Span::styled(repo_display, Style::default().fg(p.overlay0))),
+                Rect::new(body.x, row_y, body.width, 1),
+            );
+            row_y += 1;
         }
-        if let Some(custom_status) = &detail.custom_status {
-            status_spans.push(Span::styled(" · ", agent_style));
-            status_spans.push(Span::styled(custom_status.clone(), agent_style));
-        }
-        frame.render_widget(
-            Paragraph::new(Line::from(status_spans)).style(row_style),
-            Rect::new(body.x, row_y, body.width, 1),
-        );
-        row_y += 1;
 
+        // Gap row between entries.
         if row_y < body_bottom {
             row_y += 1;
         }
@@ -1627,27 +1759,6 @@ mod tests {
     }
 
     #[test]
-    fn all_workspaces_primary_label_truncates_workspace_and_tab() {
-        let entry = AgentPanelEntry {
-            ws_idx: 0,
-            tab_idx: 0,
-            pane_id: crate::layout::PaneId::from_raw(1),
-            primary_label: "agent-browser".into(),
-            primary_tab_label: Some("test-escalation".into()),
-            agent_label: Some("claude".into()),
-            state: AgentState::Idle,
-            seen: true,
-            last_agent_state_change_seq: None,
-            custom_status: None,
-            state_labels: std::collections::HashMap::new(),
-        };
-
-        let label = format_agent_panel_primary_label(&entry, 18);
-
-        assert_eq!(label, "agent-bro… · test…");
-    }
-
-    #[test]
     fn expanded_sidebar_sections_handle_tiny_heights() {
         let (ws_area, detail_area) = expanded_sidebar_sections(Rect::new(0, 0, 20, 5), 0.9);
 
@@ -1741,7 +1852,7 @@ mod tests {
             workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
         ];
 
-        let (cards, headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
+        let (cards, headers, _toggle_areas) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
 
         assert!(headers.is_empty());
         assert_eq!(cards[0].ws_idx, 0);
@@ -1789,7 +1900,7 @@ mod tests {
             workspace_with_worktree_space("review", Some("repo-key"), "/repo/herdr-review"),
         ];
 
-        let (cards, headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
+        let (cards, headers, _toggle_areas) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
 
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0].key, "repo-key");
@@ -1836,7 +1947,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 20);
         app.workspace_scroll = normalized_workspace_scroll(&app, area, 2);
 
-        let (cards, headers) = compute_workspace_list_areas(&app, area);
+        let (cards, headers, _toggle_areas) = compute_workspace_list_areas(&app, area);
 
         assert!(headers.is_empty());
         assert_eq!(cards.len(), 1);
@@ -1876,7 +1987,7 @@ mod tests {
         app.mode = Mode::Terminal;
         app.workspace_scroll = 1;
 
-        let (cards, headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 12));
+        let (cards, headers, _toggle_areas) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 12));
 
         assert!(headers.is_empty());
         assert_eq!(cards.len(), 1);
@@ -2069,5 +2180,41 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn worktree_agent_spans_includes_label_agent_and_count() {
+        let p = Palette::catppuccin();
+        let detail = crate::workspace::PaneDetail {
+            pane_id: crate::layout::PaneId::alloc(),
+            tab_idx: 0,
+            tab_label: "1".into(),
+            label: "claude".into(),
+            agent_label: "claude".into(),
+            agent: None,
+            state: crate::detect::AgentState::Working,
+            seen: true,
+            last_agent_state_change_seq: None,
+            custom_status: None,
+            state_labels: std::collections::HashMap::new(),
+        };
+        let spans = worktree_agent_spans(
+            &detail,
+            crate::detect::AgentState::Blocked,
+            true,
+            2,
+            false,
+            &p,
+        );
+        let content: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            content.contains("working"),
+            "expected 'working' in: {content}"
+        );
+        assert!(
+            content.contains("claude"),
+            "expected 'claude' in: {content}"
+        );
+        assert!(content.contains("+2"), "expected '+2' in: {content}");
     }
 }

@@ -7,6 +7,7 @@ use crate::terminal::{TerminalId, TerminalState};
 use super::{Tab, Workspace};
 
 /// Detail info for a single pane, used by the agent detail panel.
+#[derive(Clone)]
 pub struct PaneDetail {
     pub pane_id: PaneId,
     pub tab_idx: usize,
@@ -119,6 +120,22 @@ impl Workspace {
                 detail
             })
             .collect()
+    }
+
+    /// The pane whose agent + status represents this workspace on a collapsed
+    /// sidebar row: the active tab's focused pane, falling back to the first
+    /// pane detail. `None` when the workspace has no attached terminals.
+    pub fn primary_pane_detail(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> Option<PaneDetail> {
+        let details = self.pane_details(terminals);
+        if let Some(focused) = self.focused_pane_id() {
+            if let Some(found) = details.iter().find(|d| d.pane_id == focused) {
+                return Some(found.clone());
+            }
+        }
+        details.into_iter().next()
     }
 }
 
@@ -280,5 +297,32 @@ mod tests {
 
         assert_eq!(ws.tabs[1].number, 3);
         assert_eq!(survivor.tab_idx, 1);
+    }
+
+    #[test]
+    fn primary_pane_detail_follows_focused_pane() {
+        let mut ws = Workspace::test_new("test");
+        let root = ws.tabs[0].root_pane;
+        let second = ws.test_split(Direction::Vertical);
+        let mut terminals = HashMap::new();
+        for (pane, name, state) in [
+            (root, "claude", crate::detect::AgentState::Idle),
+            (second, "codex", crate::detect::AgentState::Working),
+        ] {
+            let mut t = terminal_for_pane(&ws, pane);
+            t.set_agent_name(name.into());
+            t.set_detected_state(None, state);
+            terminals.insert(t.id.clone(), t);
+        }
+        ws.tabs[0].layout.focus_pane(second);
+        let primary = ws.primary_pane_detail(&terminals).expect("has primary");
+        assert_eq!(primary.pane_id, second);
+        assert_eq!(primary.agent_label, "codex");
+    }
+
+    #[test]
+    fn primary_pane_detail_none_when_no_terminals() {
+        let ws = Workspace::test_new("test");
+        assert!(ws.primary_pane_detail(&HashMap::new()).is_none());
     }
 }

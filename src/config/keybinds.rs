@@ -302,6 +302,7 @@ pub struct Keybinds {
     pub goto: ActionKeybinds,
     pub detach: ActionKeybinds,
     pub reload_config: ActionKeybinds,
+    pub refresh_pr_inbox: ActionKeybinds,
     pub open_notification_target: ActionKeybinds,
     pub open_repo_chooser: ActionKeybinds,
     pub new_agent: ActionKeybinds,
@@ -469,6 +470,7 @@ impl Config {
             goto: empty_action!(),
             detach: empty_action!(),
             reload_config: empty_action!(),
+            refresh_pr_inbox: empty_action!(),
             open_notification_target: empty_action!(),
             open_repo_chooser: empty_action!(),
             new_agent: empty_action!(),
@@ -596,6 +598,7 @@ impl Config {
             apply_action!(keybinds.goto, goto, source);
             apply_action!(keybinds.detach, detach, source);
             apply_action!(keybinds.reload_config, reload_config, source);
+            apply_action!(keybinds.refresh_pr_inbox, refresh_pr_inbox, source);
             apply_action!(
                 keybinds.open_notification_target,
                 open_notification_target,

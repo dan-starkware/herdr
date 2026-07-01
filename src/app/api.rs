@@ -59,6 +59,29 @@ impl App {
             return;
         }
 
+        if let AppEvent::PrInboxRefreshed { inbox } = ev {
+            self.pr_inbox_refresh_in_flight = false;
+            if self.pr_inbox_refresh_due_after_in_flight {
+                self.mark_pr_inbox_refresh_due(Instant::now());
+                self.pr_inbox_refresh_due_after_in_flight = false;
+            } else {
+                self.last_pr_inbox_refresh = Instant::now();
+            }
+            if self.state.pr_inbox != inbox {
+                self.state.pr_inbox = inbox.clone();
+                self.emit_event(crate::api::schema::EventEnvelope {
+                    event: crate::api::schema::EventKind::PrInboxRefreshed,
+                    data: crate::api::schema::EventData::PrInboxRefreshed {
+                        prs: inbox.prs,
+                        status: inbox.status,
+                    },
+                });
+                self.render_dirty.store(true, Ordering::Release);
+                self.render_notify.notify_one();
+            }
+            return;
+        }
+
         if let AppEvent::PluginCommandFinished {
             log_id,
             finished_unix_ms,
@@ -933,6 +956,8 @@ impl App {
             Method::PluginPaneClose(params) => {
                 return self.handle_plugin_pane_close(request.id, params);
             }
+            Method::PrInboxList(_) => return self.handle_pr_inbox_list(request.id),
+            Method::PrInboxRefresh(_) => return self.handle_pr_inbox_refresh(request.id),
             _ => {
                 return responses::encode_error(
                     request.id,
@@ -943,6 +968,22 @@ impl App {
         };
 
         serde_json::to_string(&response).unwrap()
+    }
+
+    fn handle_pr_inbox_list(&mut self, id: String) -> String {
+        responses::encode_success(
+            id,
+            crate::api::schema::ResponseResult::PrInboxList {
+                prs: self.state.pr_inbox.prs.clone(),
+                status: self.state.pr_inbox.status.clone(),
+            },
+        )
+    }
+
+    fn handle_pr_inbox_refresh(&mut self, id: String) -> String {
+        self.mark_pr_inbox_refresh_due(Instant::now());
+        self.render_notify.notify_one();
+        responses::encode_success(id, crate::api::schema::ResponseResult::Ok {})
     }
 
     fn handle_notification_show(

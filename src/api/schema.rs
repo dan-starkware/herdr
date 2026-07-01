@@ -191,6 +191,10 @@ pub enum Method {
     PluginPaneFocus(PluginPaneFocusParams),
     #[serde(rename = "plugin.pane.close")]
     PluginPaneClose(PluginPaneCloseParams),
+    #[serde(rename = "pr_inbox.list")]
+    PrInboxList(EmptyParams),
+    #[serde(rename = "pr_inbox.refresh")]
+    PrInboxRefresh(EmptyParams),
 }
 
 #[cfg(test)]

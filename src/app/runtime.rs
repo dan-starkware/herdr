@@ -266,6 +266,11 @@ impl App {
         changed |= self.clear_due_selection_highlight(now);
 
         self.start_git_status_refresh_if_due(now);
+        if self.state.request_pr_inbox_refresh {
+            self.state.request_pr_inbox_refresh = false;
+            self.mark_pr_inbox_refresh_due(now);
+        }
+        self.start_pr_inbox_refresh_if_due(now);
 
         if self
             .next_auto_update_check
@@ -521,6 +526,37 @@ impl App {
             .then_some(self.last_git_remote_status_refresh + GIT_REMOTE_STATUS_REFRESH_INTERVAL)
     }
 
+    pub(crate) fn pr_inbox_refresh_deadline(&self) -> Option<Instant> {
+        (!self.pr_inbox_refresh_in_flight)
+            .then_some(self.last_pr_inbox_refresh + crate::app::PR_INBOX_REFRESH_INTERVAL)
+    }
+
+    pub(crate) fn start_pr_inbox_refresh_if_due(&mut self, now: Instant) {
+        let Some(deadline) = self.pr_inbox_refresh_deadline() else {
+            return;
+        };
+        if now < deadline {
+            return;
+        }
+        self.pr_inbox_refresh_in_flight = true;
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let inbox = crate::pr_inbox::fetch_pr_inbox();
+            let _ = event_tx.blocking_send(crate::events::AppEvent::PrInboxRefreshed { inbox });
+        });
+    }
+
+    pub(crate) fn mark_pr_inbox_refresh_due(&mut self, now: Instant) {
+        if self.pr_inbox_refresh_in_flight {
+            self.pr_inbox_refresh_due_after_in_flight = true;
+            return;
+        }
+        self.last_pr_inbox_refresh = now
+            .checked_sub(crate::app::PR_INBOX_REFRESH_INTERVAL)
+            .unwrap_or(now);
+        self.pr_inbox_refresh_due_after_in_flight = false;
+    }
+
     pub(crate) fn next_loop_deadline(&self, now: Instant, needs_render: bool) -> Option<Instant> {
         self.next_loop_deadline_with_resize_poll(now, needs_render, true, true)
     }
@@ -558,6 +594,9 @@ impl App {
             self.next_animation_tick,
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
+                .flatten(),
+            include_git_refresh
+                .then(|| self.pr_inbox_refresh_deadline())
                 .flatten(),
             self.next_auto_update_check,
             self.next_agent_manifest_update_check,
@@ -786,6 +825,8 @@ mod tests {
         app.state.workspaces.push(Workspace::test_new("test"));
         let now = Instant::now();
         app.last_git_remote_status_refresh = now - super::super::GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        // Push the PR-inbox deadline into the future so only the git timer contributes.
+        app.last_pr_inbox_refresh = now;
 
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, false),
@@ -1067,5 +1108,64 @@ mod tests {
             .pending_agent_resume_plan
             .is_some());
         assert!(app.pending_agent_resume_deadline.is_none());
+    }
+
+    #[test]
+    fn headless_deadline_can_suppress_pr_inbox_timer() {
+        let mut app = super::super::App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            tokio::sync::mpsc::unbounded_channel().1,
+            crate::api::EventHub::default(),
+        );
+        let now = Instant::now();
+        // Push last refresh into the past so the deadline is overdue.
+        app.last_pr_inbox_refresh = now - super::super::PR_INBOX_REFRESH_INTERVAL;
+
+        // When include_git_refresh=false the PR-inbox deadline is suppressed.
+        assert_eq!(
+            app.next_headless_loop_deadline_with_git_refresh(now, false, false),
+            None
+        );
+        // When include_git_refresh=true the PR-inbox deadline is included.
+        assert!(app
+            .next_headless_loop_deadline_with_git_refresh(now, false, true)
+            .is_some());
+    }
+
+    #[test]
+    fn mark_pr_inbox_refresh_due_in_flight_sets_flag() {
+        let mut app = super::super::App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            tokio::sync::mpsc::unbounded_channel().1,
+            crate::api::EventHub::default(),
+        );
+        let now = Instant::now();
+        // Push last refresh into the future so we can detect that it did NOT move.
+        app.last_pr_inbox_refresh = now + Duration::from_secs(10);
+        app.pr_inbox_refresh_in_flight = true;
+
+        app.mark_pr_inbox_refresh_due(now);
+
+        // Flag set, last_refresh unchanged.
+        assert!(app.pr_inbox_refresh_due_after_in_flight);
+        assert!(
+            app.last_pr_inbox_refresh > now,
+            "last_pr_inbox_refresh must not have moved backward"
+        );
+
+        // When not in-flight, mark_pr_inbox_refresh_due moves the deadline into the past.
+        app.pr_inbox_refresh_in_flight = false;
+        app.mark_pr_inbox_refresh_due(now);
+        assert!(!app.pr_inbox_refresh_due_after_in_flight);
+        assert!(
+            app.pr_inbox_refresh_deadline()
+                .map(|d| d <= now)
+                .unwrap_or(false),
+            "deadline should be in the past after mark_pr_inbox_refresh_due"
+        );
     }
 }

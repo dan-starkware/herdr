@@ -856,3 +856,28 @@ fn plugin_pane_open_request_round_trips() {
     let restored: Request = serde_json::from_value(json).unwrap();
     assert_eq!(restored, request);
 }
+
+#[test]
+fn pr_inbox_list_response_round_trips() {
+    use crate::pr_inbox::{PullRequestInboxStatus, PullRequestSummary};
+
+    let response = SuccessResponse {
+        id: "req_pr".into(),
+        result: ResponseResult::PrInboxList {
+            prs: vec![PullRequestSummary {
+                number: 42,
+                title: "fix: something".into(),
+                url: "https://github.com/example/repo/pull/42".into(),
+                state: "open".into(),
+                is_draft: false,
+                repo: "example/repo".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+            }],
+            status: PullRequestInboxStatus::Ok,
+        },
+    };
+
+    let json = serde_json::to_string(&response).unwrap();
+    let restored: SuccessResponse = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, response);
+}

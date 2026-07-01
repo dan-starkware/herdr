@@ -617,6 +617,7 @@ pub(crate) enum NavigateAction {
     ToggleReview,
     ReloadReview,
     ReviewVsOrigin,
+    RefreshPrInbox,
 }
 
 fn indexed_navigation_action(
@@ -716,6 +717,7 @@ fn action_for_key(
         (&kb.resize_mode, NavigateAction::EnterResizeMode),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
         (&kb.reload_config, NavigateAction::ReloadConfig),
+        (&kb.refresh_pr_inbox, NavigateAction::RefreshPrInbox),
         (
             &kb.open_notification_target,
             NavigateAction::OpenNotificationTarget,
@@ -980,6 +982,10 @@ pub(super) fn execute_navigate_action_in_context(
             if let Some(ws_idx) = workspace_action_target(state, context) {
                 state.request_review_row = Some((ws_idx, ReviewRowAction::VsOrigin));
             }
+            leave_navigate_mode(state);
+        }
+        NavigateAction::RefreshPrInbox => {
+            state.request_pr_inbox_refresh = true;
             leave_navigate_mode(state);
         }
     }

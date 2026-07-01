@@ -257,6 +257,10 @@ impl ActiveSubscription {
                     },
                 )))
             }
+            Subscription::PrInboxRefreshed {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::PrInboxRefreshed,
+                last_sequence: 0,
+            })),
         }
     }
 
