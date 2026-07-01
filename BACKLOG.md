@@ -53,3 +53,38 @@ prioritized and may already be stale.
 
 - **`just install` recipe.** A one-shot `server stop && install -m755 … && herdr`
   to avoid running a stale binary after each rebuild.
+
+## PR inbox + inline-agent sidebar (landed 2026-07-01)
+
+Follow-ups deferred when the PR-inbox / inline-agent-row feature was integrated
+onto `master`:
+
+- **Wire PR-inbox scrollbar input.** `render_pr_inbox` draws a scrollbar and
+  `pr_inbox_scroll`/`pr_inbox_scroll_metrics` exist, but no input handler
+  mutates `pr_inbox_scroll` — wheel/click/drag on the PR list do nothing (the
+  list is capped at 30, so it always shows from the top). Wire it the way the
+  old agent panel's scroll was.
+
+- **Bind a key to the manual PR refresh.** The `RefreshPrInbox` navigate action
+  and `pr_inbox.refresh` API method exist, but `refresh_pr_inbox` is unbound by
+  default (to avoid clashes). Pick a default binding.
+
+- **Per-PR review/CI indicator.** `gh search prs --json` cannot supply
+  `reviewDecision`/`statusCheckRollup`, so rows show only repo · #num · title ·
+  draft/open. Enriching needs a per-PR `gh pr view`/`gh pr checks` call or a
+  GraphQL query.
+
+- **Finish removing the dead agent-panel scaffolding (B7 was partial).**
+  `render_agent_detail` is gone, but `AgentPanelEntry`, `agent_panel_sort`,
+  `agent_panel_scroll`, and `AgentPanelSort` are retained because
+  `input/sidebar.rs` and the mouse/scroll handlers still reference them.
+  Removing them requires migrating those handlers.
+
+- **UX: worktree-row line 1 may be cluttered.** After integrating onto the
+  spaces/worktree sidebar, an indented row's line 1 can carry both the existing
+  branch / agent-by-branch label and the new inline agent+status+caret. Eyeball
+  it on the running TUI and trim redundancy.
+
+- **Cross-highlight a PR against its local worktree.** If a PR's head branch
+  matches an open worktree's branch, highlight across the two sidebar sections
+  (deferred from the original PR-inbox spec).
