@@ -26,6 +26,11 @@ pub struct SessionSnapshot {
     pub sidebar_section_split: Option<f32>,
     #[serde(default)]
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    /// Workspace ids that herdr created as agent worktrees. Persisted so the
+    /// "close removes the worktree" affordance survives a restart/restore
+    /// instead of being reset to empty on startup.
+    #[serde(default)]
+    pub agent_worktree_workspace_ids: std::collections::HashSet<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -187,6 +192,8 @@ struct RawSessionSnapshot {
     sidebar_section_split: Option<f32>,
     #[serde(default)]
     collapsed_space_keys: std::collections::HashSet<String>,
+    #[serde(default)]
+    agent_worktree_workspace_ids: std::collections::HashSet<String>,
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -202,6 +209,7 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
         sidebar_width: raw.sidebar_width,
         sidebar_section_split: raw.sidebar_section_split,
         collapsed_space_keys: raw.collapsed_space_keys,
+        agent_worktree_workspace_ids: raw.agent_worktree_workspace_ids,
     })
 }
 
@@ -264,6 +272,7 @@ pub fn capture(
     sidebar_width: u16,
     sidebar_section_split: f32,
     collapsed_space_keys: std::collections::HashSet<String>,
+    agent_worktree_workspace_ids: std::collections::HashSet<String>,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
@@ -276,6 +285,7 @@ pub fn capture(
         sidebar_width: Some(sidebar_width),
         sidebar_section_split: Some(sidebar_section_split),
         collapsed_space_keys,
+        agent_worktree_workspace_ids,
     }
 }
 
@@ -551,6 +561,7 @@ mod tests {
             state.sidebar_width,
             state.sidebar_section_split,
             state.collapsed_space_keys.clone(),
+            state.agent_worktree_workspace_ids.clone(),
         )
     }
 
@@ -578,6 +589,7 @@ mod tests {
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            agent_worktree_workspace_ids: std::collections::HashSet::new(),
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored = parse_snapshot(&json).unwrap();
@@ -665,6 +677,7 @@ mod tests {
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            agent_worktree_workspace_ids: std::collections::HashSet::new(),
             version: SNAPSHOT_VERSION,
         };
 
@@ -850,6 +863,30 @@ mod tests {
         assert_eq!(snapshot.sidebar_width, Some(31));
         assert_eq!(snapshot.sidebar_section_split, Some(0.4));
         assert!(snapshot.collapsed_space_keys.contains("repo-key"));
+    }
+
+    #[test]
+    fn capture_contract_tracks_agent_worktree_workspace_ids() {
+        let mut state = state_with_workspaces(&["one"]);
+        let ws_id = state.workspaces[0].id.clone();
+        state.agent_worktree_workspace_ids.insert(ws_id.clone());
+
+        let snapshot = capture_from_state(&state);
+        assert!(
+            snapshot.agent_worktree_workspace_ids.contains(&ws_id),
+            "agent-worktree workspace ids must persist so 'close removes the worktree' survives restart"
+        );
+
+        // Backward compatibility: a serialized snapshot missing the field
+        // deserializes to an empty set rather than failing.
+        let mut value = serde_json::to_value(&snapshot).expect("snapshot serializes");
+        value
+            .as_object_mut()
+            .expect("snapshot is a JSON object")
+            .remove("agent_worktree_workspace_ids");
+        let reloaded: SessionSnapshot =
+            serde_json::from_value(value).expect("legacy snapshot without the field still loads");
+        assert!(reloaded.agent_worktree_workspace_ids.is_empty());
     }
 
     #[test]
@@ -1222,6 +1259,7 @@ mod tests {
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            agent_worktree_workspace_ids: std::collections::HashSet::new(),
         };
 
         let json = serde_json::to_string(&snap).unwrap();

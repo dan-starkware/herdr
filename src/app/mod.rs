@@ -362,6 +362,7 @@ impl App {
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
         let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut agent_worktree_workspace_ids = std::collections::HashSet::new();
         let (
             workspaces,
             active,
@@ -420,6 +421,15 @@ impl App {
                 crate::logging::session_restored(ws.len(), "ok");
                 let active = snap.active.filter(|&i| i < ws.len());
                 let selected = snap.selected.min(ws.len().saturating_sub(1));
+                // Rehydrate the agent-worktree designation, but only for
+                // workspaces that actually restored — dead ids would otherwise
+                // accumulate and could false-positive if an id were reused.
+                agent_worktree_workspace_ids = snap
+                    .agent_worktree_workspace_ids
+                    .iter()
+                    .filter(|id| ws.iter().any(|workspace| &workspace.id == *id))
+                    .cloned()
+                    .collect();
                 (
                     ws,
                     active,
@@ -538,7 +548,7 @@ impl App {
             worktree_directory,
             agent_worktree_command,
             agent_worktree_symlink_paths,
-            agent_worktree_workspace_ids: std::collections::HashSet::new(),
+            agent_worktree_workspace_ids,
             collapsed_space_keys,
             request_complete_onboarding: false,
             name_input: String::new(),
@@ -815,6 +825,12 @@ impl App {
             app.state.sidebar_section_split = split;
         }
         app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
+        app.state.agent_worktree_workspace_ids = snapshot
+            .agent_worktree_workspace_ids
+            .iter()
+            .filter(|id| app.state.workspaces.iter().any(|w| &w.id == *id))
+            .cloned()
+            .collect();
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
         } else {
