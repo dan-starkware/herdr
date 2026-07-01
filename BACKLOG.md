@@ -74,11 +74,17 @@ onto `master`:
   draft/open. Enriching needs a per-PR `gh pr view`/`gh pr checks` call or a
   GraphQL query.
 
-- **Finish removing the dead agent-panel scaffolding (B7 was partial).**
-  `render_agent_detail` is gone, but `AgentPanelEntry`, `agent_panel_sort`,
-  `agent_panel_scroll`, and `AgentPanelSort` are retained because
-  `input/sidebar.rs` and the mouse/scroll handlers still reference them.
-  Removing them requires migrating those handlers.
+- **Retire the agent-panel scaffolding — it is NOT dead code (so B7 stays
+  partial on purpose).** The *desktop* sidebar swapped the agent panel for the
+  PR inbox, but `AgentPanelEntry`, `agent_panel_entries*`, `AgentPanelSort`, and
+  `agent_panel_scroll` are **still live**: `src/ui/mobile.rs` renders its own
+  agents section from them (`agent_panel_entries`, `mobile_agent_detail`), and
+  `ui.agent_panel_sort` (`AgentPanelSortConfig` in `config/model.rs`, with tests
+  + docs) is a user-facing config option. Deleting them would break the mobile
+  layout and drop a config knob — there is nothing safe to remove as pure
+  "cleanup". Truly retiring the agent panel is a *feature* decision: bring the
+  PR inbox to the mobile layout too (replace the mobile agents section), then
+  remove the scaffolding and the `agent_panel_sort` config. Until then, leave it.
 
 - **UX: worktree-row line 1 may be cluttered.** After integrating onto the
   spaces/worktree sidebar, an indented row's line 1 can carry both the existing
