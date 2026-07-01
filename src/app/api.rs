@@ -61,7 +61,12 @@ impl App {
 
         if let AppEvent::PrInboxRefreshed { inbox } = ev {
             self.pr_inbox_refresh_in_flight = false;
-            self.last_pr_inbox_refresh = Instant::now();
+            if self.pr_inbox_refresh_due_after_in_flight {
+                self.mark_pr_inbox_refresh_due(Instant::now());
+                self.pr_inbox_refresh_due_after_in_flight = false;
+            } else {
+                self.last_pr_inbox_refresh = Instant::now();
+            }
             if self.state.pr_inbox != inbox {
                 self.state.pr_inbox = inbox.clone();
                 self.emit_event(crate::api::schema::EventEnvelope {

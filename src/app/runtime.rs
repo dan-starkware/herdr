@@ -548,11 +548,13 @@ impl App {
 
     pub(crate) fn mark_pr_inbox_refresh_due(&mut self, now: Instant) {
         if self.pr_inbox_refresh_in_flight {
+            self.pr_inbox_refresh_due_after_in_flight = true;
             return;
         }
         self.last_pr_inbox_refresh = now
             .checked_sub(crate::app::PR_INBOX_REFRESH_INTERVAL)
             .unwrap_or(now);
+        self.pr_inbox_refresh_due_after_in_flight = false;
     }
 
     pub(crate) fn next_loop_deadline(&self, now: Instant, needs_render: bool) -> Option<Instant> {
