@@ -312,6 +312,27 @@ fn restore_workspace(
     resumed_agent_sessions: &mut HashSet<String>,
     imported_panes: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
 ) -> RestoreFailures<Option<RestoredWorkspace>> {
+    // A worktree-space workspace whose checkout directory has vanished (e.g. the
+    // worktree was removed out from under herdr) has nothing meaningful to
+    // restore: falling back to HOME would resurrect it as a homeless space and
+    // fire a doomed agent resume against the wrong project directory. Drop it.
+    if let Some(space) = snap.worktree_space.as_ref() {
+        if !space.checkout_path.exists() {
+            warn!(
+                checkout = %space.checkout_path.display(),
+                "worktree checkout for restored workspace no longer exists, dropping workspace"
+            );
+            for tab in &snap.tabs {
+                let mut pane_ids = Vec::new();
+                collect_layout_snapshot_pane_ids(&tab.layout, &mut pane_ids);
+                for old_raw in pane_ids {
+                    imported_panes.remove(&old_raw);
+                }
+            }
+            return (None, 0);
+        }
+    }
+
     let mut tabs = Vec::new();
     let mut terminals = Vec::new();
     let mut terminal_runtimes = HashMap::new();
@@ -467,7 +488,8 @@ fn restore_tab(
             .map(|p| p.cwd.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
 
-        let cwd = if saved_cwd.exists() {
+        let saved_cwd_exists = saved_cwd.exists();
+        let cwd = if saved_cwd_exists {
             saved_cwd
         } else {
             warn!(
@@ -496,13 +518,25 @@ fn restore_tab(
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
         let saved_history =
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
-        let startup = {
+        let mut startup = {
             let mut agent_restore = AgentRestoreState {
                 enabled: runtime_context.resume_agents_on_restore,
                 resumed_sessions: resumed_agent_sessions,
             };
             pane_restore_startup(saved_agent_session, saved_history, &mut agent_restore)
         };
+        if !saved_cwd_exists {
+            // The saved cwd (often a worktree checkout) is gone and this pane fell
+            // back to HOME. Native agent resume is keyed to the original working
+            // directory, so `--resume` here lands in the wrong project and fails
+            // ("no conversation found"). Suppress the resume, release the dedupe
+            // reservation so a sibling pane can still claim the session, and skip
+            // rehydrating the persisted session so it is not retried next restore.
+            if let Some(key) = startup.reserved_agent_session.take() {
+                resumed_agent_sessions.remove(&key);
+            }
+            startup.restore_plan = None;
+        }
         let initial_restore_agent = startup
             .restore_plan
             .as_ref()
@@ -666,7 +700,7 @@ fn restore_tab(
                 }
                 if let Some(session) = restored_terminal_agent_session(
                     saved_agent_session,
-                    startup.duplicate_agent_session,
+                    startup.duplicate_agent_session || !saved_cwd_exists,
                 ) {
                     terminal.set_persisted_agent_session(session);
                 }
@@ -1017,6 +1051,178 @@ mod tests {
         };
 
         assert_eq!(restored_worktree_space_membership(Some(membership)), None);
+    }
+
+    fn nonexistent_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "herdr-restore-missing-{}-{}",
+            tag,
+            std::process::id()
+        ))
+    }
+
+    #[tokio::test]
+    async fn restore_drops_workspace_when_worktree_checkout_missing() {
+        // A worktree-space workspace whose checkout directory vanished (deleted
+        // externally) must not be resurrected as a homeless HOME space, and must
+        // not fire a doomed `--resume` against the HOME fallback.
+        let missing = nonexistent_dir("checkout");
+        assert!(!missing.exists());
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("gone".into()),
+                custom_name: None,
+                identity_cwd: missing.clone(),
+                worktree_space: Some(crate::workspace::WorktreeSpaceMembership {
+                    key: "repo-key".into(),
+                    label: "herdr".into(),
+                    repo_root: missing.join("repo"),
+                    checkout_path: missing.clone(),
+                    is_linked_worktree: true,
+                }),
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd: missing.clone(),
+                            label: None,
+                            agent_name: None,
+                            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                                source: "herdr:claude".into(),
+                                agent: "claude".into(),
+                                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                                value: "dead-session".into(),
+                            }),
+                            launch_argv: None,
+                            detected_agent: Some("claude".into()),
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        assert!(
+            workspaces.is_empty(),
+            "a workspace whose worktree checkout no longer exists should be dropped, not resurrected as a homeless space"
+        );
+        assert!(terminals.is_empty());
+        assert!(runtimes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn restore_suppresses_agent_resume_when_pane_cwd_missing() {
+        // A non-worktree workspace still restores, but a pane whose saved cwd is
+        // gone falls back to HOME; native agent resume is keyed to the original
+        // directory, so the resume must be suppressed and the stale session must
+        // not be rehydrated (otherwise it retries and fails every restart).
+        let missing = nonexistent_dir("panecwd");
+        assert!(!missing.exists());
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("ws".into()),
+                custom_name: None,
+                identity_cwd: missing.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd: missing.clone(),
+                            label: None,
+                            agent_name: None,
+                            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                                source: "herdr:claude".into(),
+                                agent: "claude".into(),
+                                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                                value: "dead-session".into(),
+                            }),
+                            launch_argv: None,
+                            detected_agent: None,
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (workspaces, terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        assert_eq!(
+            workspaces.len(),
+            1,
+            "a non-worktree workspace with a missing pane cwd should still restore"
+        );
+        let terminal = terminals
+            .values()
+            .next()
+            .expect("pane should restore in the HOME fallback");
+        assert!(
+            terminal.pending_agent_resume_plan.is_none(),
+            "agent resume must not fire against the HOME fallback cwd"
+        );
+        assert!(
+            terminal.persisted_agent_session.is_none(),
+            "stale session should not be rehydrated so it is not retried next restore"
+        );
     }
 
     #[test]
