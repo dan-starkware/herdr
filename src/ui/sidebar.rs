@@ -612,7 +612,7 @@ pub(crate) fn compute_workspace_list_areas(
                         rect: Rect::new(caret_x, row_y, caret_width, 1),
                     });
                 }
-                row_y = row_y.saturating_add(total_height + gap);
+                row_y = row_y.saturating_add(total_height.saturating_add(gap));
             }
         }
     }
