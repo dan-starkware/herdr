@@ -636,6 +636,21 @@ impl AppState {
                         return None;
                     }
 
+                    if let Some(target) = self.pr_inbox_scrollbar_target_at(mouse.column, mouse.row)
+                    {
+                        match target {
+                            ScrollbarClickTarget::Thumb { grab_row_offset } => {
+                                self.drag = Some(DragState {
+                                    target: DragTarget::PrInboxScrollbar { grab_row_offset },
+                                });
+                            }
+                            ScrollbarClickTarget::Track { offset_from_bottom } => {
+                                self.set_pr_inbox_offset_from_bottom(offset_from_bottom);
+                            }
+                        }
+                        return None;
+                    }
+
                     if let Some(target) =
                         self.agent_panel_scrollbar_target_at(mouse.column, mouse.row)
                     {
@@ -774,6 +789,13 @@ impl AppState {
                                 self.agent_panel_offset_for_drag_row(mouse.row, *grab_row_offset)
                             {
                                 self.set_agent_panel_offset_from_bottom(offset_from_bottom);
+                            }
+                        }
+                        DragTarget::PrInboxScrollbar { grab_row_offset } => {
+                            if let Some(offset_from_bottom) =
+                                self.pr_inbox_offset_for_drag_row(mouse.row, *grab_row_offset)
+                            {
+                                self.set_pr_inbox_offset_from_bottom(offset_from_bottom);
                             }
                         }
                         DragTarget::PaneSplit {
@@ -940,16 +962,7 @@ impl AppState {
             }
 
             MouseEventKind::ScrollUp if in_sidebar => {
-                let agent_area = self.agent_panel_rect();
-                let over_agent_panel = agent_area != Rect::default()
-                    && mouse.row >= agent_area.y
-                    && mouse.row < agent_area.y + agent_area.height;
-                if over_agent_panel {
-                    if crate::ui::should_show_scrollbar(crate::ui::agent_panel_scroll_metrics(
-                        self, agent_area,
-                    )) {
-                        self.scroll_agent_panel(-1);
-                    }
+                if self.scroll_sidebar_bottom_section_with_wheel(mouse.row, -1) {
                 } else if crate::ui::should_show_scrollbar(
                     crate::ui::workspace_list_scroll_metrics(self, self.workspace_list_rect()),
                 ) {
@@ -959,16 +972,7 @@ impl AppState {
                 }
             }
             MouseEventKind::ScrollDown if in_sidebar => {
-                let agent_area = self.agent_panel_rect();
-                let over_agent_panel = agent_area != Rect::default()
-                    && mouse.row >= agent_area.y
-                    && mouse.row < agent_area.y + agent_area.height;
-                if over_agent_panel {
-                    if crate::ui::should_show_scrollbar(crate::ui::agent_panel_scroll_metrics(
-                        self, agent_area,
-                    )) {
-                        self.scroll_agent_panel(1);
-                    }
+                if self.scroll_sidebar_bottom_section_with_wheel(mouse.row, 1) {
                 } else if crate::ui::should_show_scrollbar(
                     crate::ui::workspace_list_scroll_metrics(self, self.workspace_list_rect()),
                 ) {

@@ -1839,7 +1839,8 @@ mod tests {
             workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
         ];
 
-        let (cards, headers, _toggle_areas) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
+        let (cards, headers, _toggle_areas) =
+            compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
 
         assert!(headers.is_empty());
         assert_eq!(cards[0].ws_idx, 0);
@@ -1887,7 +1888,8 @@ mod tests {
             workspace_with_worktree_space("review", Some("repo-key"), "/repo/herdr-review"),
         ];
 
-        let (cards, headers, _toggle_areas) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
+        let (cards, headers, _toggle_areas) =
+            compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
 
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0].key, "repo-key");
@@ -1974,7 +1976,8 @@ mod tests {
         app.mode = Mode::Terminal;
         app.workspace_scroll = 1;
 
-        let (cards, headers, _toggle_areas) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 12));
+        let (cards, headers, _toggle_areas) =
+            compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 12));
 
         assert!(headers.is_empty());
         assert_eq!(cards.len(), 1);

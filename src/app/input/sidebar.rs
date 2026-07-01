@@ -165,6 +165,107 @@ impl AppState {
         }
     }
 
+    /// The bottom sidebar section, which renders the PR inbox. This is the same
+    /// region as [`Self::agent_panel_rect`] (the agent panel is no longer drawn
+    /// there); kept as a neutrally-named accessor for the PR-inbox input paths.
+    pub(super) fn pr_inbox_rect(&self) -> Rect {
+        let sidebar = self.view.sidebar_rect;
+        if self.sidebar_collapsed || sidebar.width <= 1 || sidebar.height == 0 {
+            return Rect::default();
+        }
+        let (_, detail_area) =
+            crate::ui::expanded_sidebar_sections(sidebar, self.sidebar_section_split);
+        detail_area
+    }
+
+    pub(super) fn pr_inbox_scrollbar_target_at(
+        &self,
+        col: u16,
+        row: u16,
+    ) -> Option<ScrollbarClickTarget> {
+        let area = self.pr_inbox_rect();
+        let metrics = crate::ui::pr_inbox_scroll_metrics(self, area);
+        let track = crate::ui::pr_inbox_scrollbar_rect(self, area)?;
+        if col < track.x
+            || col >= track.x + track.width
+            || row < track.y
+            || row >= track.y + track.height
+        {
+            return None;
+        }
+        if let Some(grab_row_offset) = crate::ui::scrollbar_thumb_grab_offset(metrics, track, row) {
+            Some(ScrollbarClickTarget::Thumb { grab_row_offset })
+        } else {
+            Some(ScrollbarClickTarget::Track {
+                offset_from_bottom: crate::ui::scrollbar_offset_from_row(metrics, track, row),
+            })
+        }
+    }
+
+    pub(super) fn pr_inbox_offset_for_drag_row(
+        &self,
+        row: u16,
+        grab_row_offset: u16,
+    ) -> Option<usize> {
+        let area = self.pr_inbox_rect();
+        let metrics = crate::ui::pr_inbox_scroll_metrics(self, area);
+        let track = crate::ui::pr_inbox_scrollbar_rect(self, area)?;
+        Some(crate::ui::scrollbar_offset_from_drag_row(
+            metrics,
+            track,
+            row,
+            grab_row_offset,
+        ))
+    }
+
+    pub(super) fn set_pr_inbox_offset_from_bottom(&mut self, offset_from_bottom: usize) {
+        let area = self.pr_inbox_rect();
+        let metrics = crate::ui::pr_inbox_scroll_metrics(self, area);
+        self.pr_inbox_scroll = metrics
+            .max_offset_from_bottom
+            .saturating_sub(offset_from_bottom);
+    }
+
+    pub(super) fn scroll_pr_inbox(&mut self, delta: i16) {
+        let area = self.pr_inbox_rect();
+        let max_scroll = crate::ui::pr_inbox_scroll_metrics(self, area).max_offset_from_bottom;
+        if delta.is_negative() {
+            self.pr_inbox_scroll = self
+                .pr_inbox_scroll
+                .saturating_sub(delta.unsigned_abs() as usize);
+        } else {
+            self.pr_inbox_scroll = self
+                .pr_inbox_scroll
+                .saturating_add(delta as usize)
+                .min(max_scroll);
+        }
+    }
+
+    /// Handle a wheel tick over the bottom sidebar section. Returns `true` when
+    /// the pointer is over that section (consuming the event so it does not fall
+    /// through to the workspace list). The PR inbox owns the section and is tried
+    /// first; the agent-panel path is a fallback for when the inbox is empty.
+    pub(super) fn scroll_sidebar_bottom_section_with_wheel(
+        &mut self,
+        row: u16,
+        delta: i16,
+    ) -> bool {
+        let area = self.pr_inbox_rect();
+        let over_bottom_section =
+            area != Rect::default() && row >= area.y && row < area.y + area.height;
+        if !over_bottom_section {
+            return false;
+        }
+        if crate::ui::should_show_scrollbar(crate::ui::pr_inbox_scroll_metrics(self, area)) {
+            self.scroll_pr_inbox(delta);
+        } else if crate::ui::should_show_scrollbar(crate::ui::agent_panel_scroll_metrics(
+            self, area,
+        )) {
+            self.scroll_agent_panel(delta);
+        }
+        true
+    }
+
     pub(crate) fn sidebar_footer_rect(&self) -> Rect {
         let ws_area = self.workspace_list_rect();
         if ws_area == Rect::default() {
@@ -503,6 +604,7 @@ mod tests {
     use super::super::{app_for_mouse_test, capture_snapshot, mouse, unique_temp_path};
     use crate::{
         app::state::{AgentPanelSort, ContextMenuKind, DragTarget, Mode},
+        app::App,
         detect::Agent,
         workspace::Workspace,
     };
@@ -953,6 +1055,110 @@ mod tests {
 
         assert_eq!(app.state.agent_panel_scroll, 1);
         assert_eq!(app.state.selected, 0);
+    }
+
+    fn app_with_overflowing_pr_inbox(count: usize) -> App {
+        use crate::pr_inbox::{PullRequestInboxStatus, PullRequestSummary};
+
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.pr_inbox.status = PullRequestInboxStatus::Ok;
+        app.state.pr_inbox.prs = (0..count)
+            .map(|i| PullRequestSummary {
+                number: i as u64 + 1,
+                title: format!("pr {i}"),
+                url: format!("https://example.test/{i}"),
+                state: "OPEN".into(),
+                is_draft: false,
+                repo: "owner/repo".into(),
+                updated_at: "2026-07-01T00:00:00Z".into(),
+            })
+            .collect();
+        app
+    }
+
+    #[test]
+    fn scrolling_pr_inbox_with_wheel_updates_pr_inbox_scroll() {
+        let mut app = app_with_overflowing_pr_inbox(12);
+
+        let detail_area = app.state.pr_inbox_rect();
+        assert!(crate::ui::should_show_scrollbar(
+            crate::ui::pr_inbox_scroll_metrics(&app.state, detail_area)
+        ));
+
+        app.handle_mouse(mouse(
+            MouseEventKind::ScrollDown,
+            detail_area.x + 1,
+            detail_area.y + 4,
+        ));
+
+        assert_eq!(app.state.pr_inbox_scroll, 1);
+        // Wheel over the PR inbox must not move workspace selection.
+        assert_eq!(app.state.selected, 0);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::ScrollUp,
+            detail_area.x + 1,
+            detail_area.y + 4,
+        ));
+        assert_eq!(app.state.pr_inbox_scroll, 0);
+    }
+
+    #[test]
+    fn clicking_pr_inbox_scrollbar_track_jumps_scroll() {
+        let mut app = app_with_overflowing_pr_inbox(12);
+
+        let detail_area = app.state.pr_inbox_rect();
+        let track = crate::ui::pr_inbox_scrollbar_rect(&app.state, detail_area)
+            .expect("pr inbox scrollbar should be visible");
+        // With scroll at the top the thumb sits at the track top. Click a row
+        // lower in the track (avoiding the thumb and the bottom-row sidebar
+        // toggle) to jump the scroll position downward.
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            track.x,
+            track.y + track.height / 2,
+        ));
+
+        assert!(
+            app.state.pr_inbox_scroll > 0,
+            "clicking below the thumb should scroll down, got {}",
+            app.state.pr_inbox_scroll
+        );
+    }
+
+    #[test]
+    fn dragging_pr_inbox_scrollbar_thumb_updates_scroll() {
+        let mut app = app_with_overflowing_pr_inbox(12);
+
+        let detail_area = app.state.pr_inbox_rect();
+        let track = crate::ui::pr_inbox_scrollbar_rect(&app.state, detail_area)
+            .expect("pr inbox scrollbar should be visible");
+
+        // Grab the thumb at the top of the track.
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            track.x,
+            track.y,
+        ));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|d| &d.target),
+            Some(DragTarget::PrInboxScrollbar { .. })
+        ));
+
+        // Drag it to the bottom of the track.
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            track.x,
+            track.y + track.height - 1,
+        ));
+
+        let max_scroll =
+            crate::ui::pr_inbox_scroll_metrics(&app.state, detail_area).max_offset_from_bottom;
+        assert_eq!(app.state.pr_inbox_scroll, max_scroll);
     }
 
     #[test]
