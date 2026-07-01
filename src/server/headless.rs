@@ -3415,6 +3415,10 @@ impl HeadlessServer {
 
         if self.has_app_client() {
             self.app.start_git_status_refresh_if_due(now);
+            if self.app.state.request_pr_inbox_refresh {
+                self.app.state.request_pr_inbox_refresh = false;
+                self.app.mark_pr_inbox_refresh_due(now);
+            }
             self.app.start_pr_inbox_refresh_if_due(now);
         }
 
