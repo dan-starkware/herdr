@@ -29,29 +29,55 @@ Examples:
 - Sidebar layout, token placement, colors, selection, modals, mouse/viewport state: TUI/client.
 - Workspace/tab/pane remain shared session organization for now, but avoid making them mandatory identity for unrelated runtime features.
 
-## Multi-agent isolation
+## Multi-agent isolation & worktree development
 
-Read-only investigation can happen in the shared checkout.
+**The source of truth is LOCAL.** The main branch is `master` in the main
+checkout at `/home/dan/workspaces/herdr`. This local `master` is authoritative
+and is intentionally **ahead of `origin/master`** — work here is generally not
+pushed. Never treat `origin/master`, or a fresh clone, as the base of truth: it
+lags behind local `master`, sometimes by many commits (including releases).
 
-Small changes or small tasks are fine in the default main worktree. If you find unrelated implementation changes already in progress in the main worktree, use a dedicated worktree instead. Use a dedicated worktree for bigger features too.
+**Local only — never push.** Do not run `git push` / `gt submit` / any
+remote-publishing command (including deleting a branch on a remote) unless Dan
+explicitly says "push" *in that moment*. "land it", "integrate", "merge to
+master", or picking a recovery option do **not** authorize a push — they mean
+local integration only. (This supersedes any older "push origin/master"
+wording.)
 
-Use this layout:
+**Worktree layout (as actually used):**
 
-- shared integration checkout: `../herdr`
-- task worktrees: `../herdr-worktrees/<task-slug>`
-- task branches: `issue/<id>-<slug>` when an issue exists
+- Source of truth / main checkout: `/home/dan/workspaces/herdr` (branch `master`).
+- Task & agent worktrees live under `/home/dan/.herdr/worktrees/herdr/<name>`
+  and `/home/dan/workspaces/herdr/.claude/worktrees/<agent>`. All worktrees
+  share the one `.git`, so every branch and commit is visible from every
+  worktree — nothing is stranded in a worktree.
 
-Do all code edits, tests, and validation inside the task worktree.
+Do all edits, tests, and validation inside the task worktree; commit on the
+task branch there. If the session is already inside an isolated worktree, keep
+using it — do not nest worktrees.
 
-Commit on the task branch in that worktree.
+**Always base new work on LOCAL `master`, not `origin/master`.** Branch new
+worktrees from local `master` and verify currency against
+`/home/dan/workspaces/herdr` — not against origin. A remote/cloud agent or fresh
+clone starts from `origin/master`, which may be far behind; work built that way
+lands on a **stale base** and conflicts with local `master`. If a remote agent
+is used anyway, plan to **re-integrate its result onto local `master`**
+(merge/rebase + resolve conflicts + re-review) rather than fast-forwarding
+blindly. (This exact trap caused a bad integration on 2026-07-01.)
 
-When the change is ready, fast-forward the shared checkout at `../herdr` to the task branch commit, then push `origin/master` from `../herdr`. Do not treat the task branch as the final landing branch.
+**How and when to merge — all local:**
 
-If the current session is already inside an isolated task worktree, keep using it. Do not create nested worktrees.
-
-Before committing, propose the commit message and get alignment.
-
-After the change is integrated, remove the task worktree and delete the task branch locally and remotely.
+1. Feature/agent work lives on its own branch in its own worktree, based on
+   local `master`.
+2. To integrate, create an integration branch off local `master`,
+   `git merge` the feature branch into it, resolve conflicts, and get
+   `cargo build` + tests **green**. Leave `master` untouched during this.
+3. Before committing, propose the commit message and get alignment.
+4. Once green **and** Dan approves, fast-forward local `master`:
+   `git -C /home/dan/workspaces/herdr merge --ff-only <integration-branch>`.
+   That is the entire landing — **no push**.
+5. Afterward the task worktree/branch may be removed **locally** (never on a
+   remote); ask before removing.
 
 ## Testing
 
